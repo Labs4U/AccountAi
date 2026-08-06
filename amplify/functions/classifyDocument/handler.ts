@@ -1,71 +1,86 @@
-import { BedrockRuntimeClient, ConverseCommand } from "@aws-sdk/client-bedrock-runtime";
+import { Handler } from 'aws-lambda';
+import { BedrockRuntimeClient, ConverseCommand } from '@aws-sdk/client-bedrock-runtime';
+import { moveDocumentToCategoryFolder } from './moveS3Object';
+import { env } from '$amplify/env/classifyDocument';
+const bedrock = new BedrockRuntimeClient({});
 
-const client = new BedrockRuntimeClient();
+interface S3EventDetail {
+  bucket: { name: string };
+  object: { key: string };
+}
 
-export const handler = async (event: any) => {
-  console.log("Received event:", JSON.stringify(event, null, 2));
+interface StepFunctionInput {
+  detail?: S3EventDetail;
+}
 
-  let s3Key = "";
-  let documentId = "";
+export const handler: Handler<StepFunctionInput> = async (event) => {
+  console.log("ClassifyDocument triggered with event:", JSON.stringify(event, null, 2));
 
-  // 1. Smart extraction: Handle both direct S3 triggers and Step Function payloads
-  if (event.Records && event.Records[0].s3) {
-    // Source: Direct S3 Event Notification
-    // Decode the key in case of spaces or special characters in the filename
-    s3Key = decodeURIComponent(event.Records[0].s3.object.key.replace(/\+/g, " "));
-    
-    // Extract documentId from filename (e.g., from "{SUB}/raw/doc-12345.pdf" -> "doc-12345")
-    const fileName = s3Key.split('/').pop() || "";
-    documentId = fileName.split('.')[0] || "unknown-doc-id";
-    
-  } else if (event.s3Key) {
-    // Source: Step Functions orchestrated flow
-    s3Key = event.s3Key;
-    documentId = event.documentId || "unknown-doc-id";
-    
-  } else {
-    console.error("Unrecognized event format");
-    throw new Error("Unrecognized event format. Missing s3Key.");
+  const bucket = event.detail?.bucket?.name;
+  const key = event.detail?.object?.key;
+
+  if (!bucket || !key) {
+    throw new Error("Invalid event payload: Missing bucket or key.");
   }
 
-  // 2. INFINITE LOOP PROTECTION
-  // Stop execution immediately if the file is NOT in a /raw/ folder
-  if (!s3Key.includes('/raw/')) {
-    console.log(`Ignoring object ${s3Key} as it is not in the /raw/ landing folder.`);
-    // Return early without calling Bedrock
-    return { 
-      status: "IGNORED", 
-      message: "File not in /raw/ folder. Ignored to prevent infinite loops." 
-    };
-  }
-
-  console.log(`Processing documentId: ${documentId} with key: ${s3Key}`);
-
-  // 3. Document Classification Request
-  const prompt = `Classify this document into one of the following categories: INVOICE, RECEIPT, or OTHER. Respond with ONLY the category name.`;
-
-  const command = new ConverseCommand({
-    modelId: "us.amazon.nova-2-lite-v1:0",
-    messages: [
-      {
-        role: "user",
-        content: [{ text: prompt }]
-        // Note: In production, you will fetch the S3 object and pass the image bytes here
-      }
-    ]
-  });
+  const modelId = env.MODEL_ID || 'us.amazon.nova-2-lite-v1:0';
 
   try {
-    const response = await client.send(command);
-    const classification = response.output?.message?.content?.[0]?.text?.trim() || "OTHER";
-    
+    let documentType: "INVOICE" | "RECEIPT" | "OTHER" = "INVOICE";
+    const lowerKey = key.toLowerCase();
+
+    // 1. Quick local check
+    if (lowerKey.includes('receipt')) {
+      documentType = 'RECEIPT';
+    } else if (lowerKey.includes('invoice')) {
+      documentType = 'INVOICE';
+    } else {
+      // 2. Call Amazon Bedrock Nova Lite using Converse API
+      try {
+        const bedrockResponse = await bedrock.send(
+          new ConverseCommand({
+            modelId: modelId,
+            messages: [
+              {
+                role: 'user',
+                content: [
+                  {
+                    text: `Classify this document file named "${key}". Respond ONLY with one exact word: INVOICE, RECEIPT, or OTHER.`
+                  }
+                ]
+              }
+            ]
+          })
+        );
+
+        const resultText = bedrockResponse.output?.message?.content?.[0]?.text?.trim().toUpperCase();
+        if (resultText === 'RECEIPT' || resultText === 'INVOICE' || resultText === 'OTHER') {
+          documentType = resultText;
+        }
+      } catch (bedrockErr) {
+        console.warn("Bedrock classification fallback to default INVOICE:", bedrockErr);
+      }
+    }
+
+    // 3. Move file from raw to designated category folder in S3
+    let targetKey = key;
+    try {
+      targetKey = await moveDocumentToCategoryFolder(bucket, key, documentType);
+    } catch (moveErr) {
+      console.warn("Skipped or failed object relocation, proceeding with original key:", moveErr);
+    }
+
+    console.log(`Classified document s3://${bucket}/${targetKey} as ${documentType}`);
+
     return {
-      documentId,
-      classification,
-      status: 'PENDING_CLASS'
+      documentType,
+      bucket,
+      key: targetKey,
+      originalKey: key
     };
+
   } catch (error) {
-    console.error("Bedrock classification failed", error);
+    console.error("Classification failed:", error);
     throw error;
   }
 };

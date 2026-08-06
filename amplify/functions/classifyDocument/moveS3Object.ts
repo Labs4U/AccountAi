@@ -1,22 +1,28 @@
 import { S3Client, CopyObjectCommand, DeleteObjectCommand } from "@aws-sdk/client-s3";
 
 const s3 = new S3Client();
-const BUCKET_NAME = "account-ai-bh";
 
 export async function moveDocumentToCategoryFolder(
-  userSub: string,
-  fileName: string,
+  bucketName: string,
+  sourceKey: string,
   confirmedCategory: "INVOICE" | "RECEIPT" | "OTHER"
 ): Promise<string> {
-  const sourceKey = `${userSub}/raw/${fileName}`;
-  const targetKey = `${userSub}/${confirmedCategory}/${fileName}`;
+  // Extract file name from the S3 key path
+  const keyParts = sourceKey.split('/');
+  const fileName = keyParts.pop() || 'document.pdf';
+
+  // Construct target key replacing '/raw/' or appending category
+  const categoryFolder = confirmedCategory.toLowerCase();
+  const targetKey = sourceKey.includes('/raw/')
+    ? sourceKey.replace('/raw/', `/${categoryFolder}/`)
+    : `${keyParts.join('/')}/${categoryFolder}/${fileName}`;
 
   try {
     // 1. Copy object to category folder
     await s3.send(
       new CopyObjectCommand({
-        Bucket: BUCKET_NAME,
-        CopySource: `${BUCKET_NAME}/${sourceKey}`,
+        Bucket: bucketName,
+        CopySource: `${bucketName}/${sourceKey}`,
         Key: targetKey,
       })
     );
@@ -24,13 +30,13 @@ export async function moveDocumentToCategoryFolder(
     // 2. Delete original object from raw landing folder
     await s3.send(
       new DeleteObjectCommand({
-        Bucket: BUCKET_NAME,
+        Bucket: bucketName,
         Key: sourceKey,
       })
     );
 
-    console.log(`Successfully moved ${sourceKey} to ${targetKey}`);
-    return `s3://${BUCKET_NAME}/${targetKey}`;
+    console.log(`Successfully moved s3://${bucketName}/${sourceKey} to s3://${bucketName}/${targetKey}`);
+    return targetKey;
   } catch (error) {
     console.error("Failed to move S3 object:", error);
     throw error;
