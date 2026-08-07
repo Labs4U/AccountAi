@@ -1,7 +1,6 @@
 import { defineBackend } from '@aws-amplify/backend';
 import { auth } from './auth/resource';
 import { data } from './data/resource';
-import { storage } from './storage/resource';
 import { classifyDocument } from './functions/classifyDocument/resource';
 import { extractExpense } from './functions/extractExpense/resource';
 
@@ -13,10 +12,10 @@ import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import { Duration } from 'aws-cdk-lib';
 
+// 1. Remove 'storage' from the backend definition
 const backend = defineBackend({
   auth,
   data,
-  storage,
   classifyDocument,
   extractExpense,
 });
@@ -24,10 +23,8 @@ const backend = defineBackend({
 const workflowStack = backend.createStack('DocumentProcessingWorkflow');
 
 // =======================================================================
-// 1. WORKFLOW TASKS DEFINITION
+// 1. WORKFLOW TASKS DEFINITION (Unchanged)
 // =======================================================================
-
-// Ingest State
 const initProcessingTask = new sfn.Pass(workflowStack, 'InitProcessing_SetState', {
   parameters: {
     'input.$': '$',
@@ -37,7 +34,6 @@ const initProcessingTask = new sfn.Pass(workflowStack, 'InitProcessing_SetState'
   resultPath: '$.ingestResult'
 });
 
-// Classify Task (Invokes classifyDocument function)
 const classifyTask = new tasks.LambdaInvoke(workflowStack, 'ClassifyDocumentTask', {
   lambdaFunction: backend.classifyDocument.resources.lambda,
   payload: sfn.TaskInput.fromJsonPathAt('$'),
@@ -45,7 +41,6 @@ const classifyTask = new tasks.LambdaInvoke(workflowStack, 'ClassifyDocumentTask
   outputPath: '$',
 });
 
-// Extract Expense Task
 const extractExpenseTask = new tasks.LambdaInvoke(workflowStack, 'ExtractExpense_Textract', {
   lambdaFunction: backend.extractExpense.resources.lambda,
   payload: sfn.TaskInput.fromObject({
@@ -56,12 +51,10 @@ const extractExpenseTask = new tasks.LambdaInvoke(workflowStack, 'ExtractExpense
   resultPath: '$.extractionRawResult',
 });
 
-// Fallback State
 const ignoreTask = new sfn.Pass(workflowStack, 'IgnoreUnsupportedDocType', {
   result: sfn.Result.fromObject({ status: 'SKIPPED', reason: 'Unsupported document category' }),
 });
 
-// Choice State: Route based on document type
 const routingChoice = new sfn.Choice(workflowStack, 'RouteByDocumentType')
   .when(
     sfn.Condition.or(
@@ -72,36 +65,32 @@ const routingChoice = new sfn.Choice(workflowStack, 'RouteByDocumentType')
   )
   .otherwise(ignoreTask);
 
-// Assemble Workflow Chain
-const definition = initProcessingTask
-  .next(classifyTask)
-  .next(routingChoice);
+const definition = initProcessingTask.next(classifyTask).next(routingChoice);
 
-// Create Express State Machine
 const stateMachine = new sfn.StateMachine(workflowStack, 'DocProcessingStateMachine', {
   definitionBody: sfn.DefinitionBody.fromChainable(definition),
-  stateMachineType: sfn.StateMachineType.EXPRESS,
+  stateMachineType: sfn.StateMachineType.STANDARD, // <--- CHANGED THIS TO STANDARD
   timeout: Duration.minutes(5),
 });
 
 // =======================================================================
-// 2. S3 & EVENTBRIDGE TRIGGER CONFIGURATION
+// 2. CONNECT TO EXISTING S3 BUCKET & EVENTBRIDGE
 // =======================================================================
-const bucket = backend.storage.resources.bucket;
-const cfnBucket = bucket.node.defaultChild as s3.CfnBucket;
 
-// Enable EventBridge notifications on S3 bucket
-cfnBucket.notificationConfiguration = {
-  eventBridgeConfiguration: { eventBridgeEnabled: true }
-};
+// Reference your existing manual bucket
+const existingBucket = s3.Bucket.fromBucketName(workflowStack, 'AccountAiBucket', 'account-ai-bh');
 
-// EventBridge Rule listening for object creations
+// EventBridge Rule listening for object creations in the raw folder
 const s3UploadRule = new events.Rule(workflowStack, 'S3UploadRule', {
   eventPattern: {
     source: ['aws.s3'],
     detailType: ['Object Created'],
     detail: {
-      bucket: { name: [bucket.bucketName] }
+      bucket: { name: [existingBucket.bucketName] },
+      // Put this back! EventBridge wildcard matching will now work securely.
+      object: {
+        key: [{ wildcard: "*/raw/*" }] 
+      }
     }
   }
 });
@@ -111,13 +100,38 @@ s3UploadRule.addTarget(new targets.SfnStateMachine(stateMachine));
 // =======================================================================
 // 3. IAM & BUCKET PERMISSIONS
 // =======================================================================
-bucket.grantReadWrite(backend.classifyDocument.resources.lambda);
-bucket.grantReadWrite(backend.extractExpense.resources.lambda);
 
-// Grant Amazon Bedrock permission for Nova Lite model calls
+// Grant Lambda read/write to the existing bucket
+existingBucket.grantReadWrite(backend.classifyDocument.resources.lambda);
+existingBucket.grantReadWrite(backend.extractExpense.resources.lambda);
+
+// Grant Customer/React users the ability to upload to this specific bucket
+const userS3Policy = new iam.PolicyStatement({
+  actions: ['s3:PutObject', 's3:GetObject', 's3:DeleteObject'],
+  resources: ['arn:aws:s3:::account-ai-bh/*'] // CHANGED
+});
+backend.auth.resources.authenticatedUserIamRole.addToPrincipalPolicy(userS3Policy);
+if (backend.auth.resources.groups) {
+  backend.auth.resources.groups['Customer'].role.addToPrincipalPolicy(userS3Policy);
+  backend.auth.resources.groups['Admin'].role.addToPrincipalPolicy(userS3Policy);
+}
 backend.classifyDocument.resources.lambda.addToRolePolicy(
   new iam.PolicyStatement({
     actions: ['bedrock:InvokeModel'],
     resources: ['arn:aws:bedrock:*::foundation-model/*'],
   })
 );
+
+backend.extractExpense.resources.lambda.addToRolePolicy(
+  new iam.PolicyStatement({
+    actions: ['textract:AnalyzeExpense'],
+    resources: ['*'], 
+  })
+);
+
+// =======================================================================
+// 4. DYNAMODB INTEGRATION (Unchanged)
+// =======================================================================
+const documentTable = backend.data.resources.tables["DocumentRecord"];
+documentTable.grantReadWriteData(backend.extractExpense.resources.lambda);
+backend.extractExpense.addEnvironment("DOCUMENT_TABLE_NAME", documentTable.tableName);

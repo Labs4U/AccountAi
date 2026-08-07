@@ -1,42 +1,215 @@
-#root {
-  max-width: 1280px;
+.container {
+  max-width: 1200px;
   margin: 0 auto;
-  padding: 2rem;
-  text-align: center;
+  padding: 1.5rem;
+  font-family: system-ui, -apple-system, sans-serif;
 }
 
-.logo {
-  height: 6em;
-  padding: 1.5em;
-  will-change: filter;
-  transition: filter 300ms;
-}
-.logo:hover {
-  filter: drop-shadow(0 0 2em #646cffaa);
-}
-.logo.react:hover {
-  filter: drop-shadow(0 0 2em #61dafbaa);
+.header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid #e0e0e0;
 }
 
-@keyframes logo-spin {
-  from {
-    transform: rotate(0deg);
-  }
-  to {
-    transform: rotate(360deg);
-  }
+.user-badge {
+  background-color: #e3f2fd;
+  color: #0d47a1;
+  padding: 0.4rem 0.8rem;
+  border-radius: 16px;
+  font-size: 0.85rem;
+  font-weight: 600;
 }
 
-@media (prefers-reduced-motion: no-preference) {
-  a:nth-of-type(2) .logo {
-    animation: logo-spin infinite 20s linear;
-  }
+.nav-tabs {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 1rem;
+  border-bottom: 1px solid #e0e0e0;
+}
+
+.tab-btn {
+  padding: 0.75rem 1.25rem;
+  border: none;
+  border-bottom: 2px solid transparent;
+  background-color: transparent;
+  cursor: pointer;
+  font-weight: 500;
+  color: #555;
+}
+
+.active-tab-btn {
+  padding: 0.75rem 1.25rem;
+  border: none;
+  border-bottom: 2px solid #1976d2;
+  background-color: transparent;
+  cursor: pointer;
+  font-weight: 700;
+  color: #1976d2;
+}
+
+.content {
+  padding-top: 1.5rem;
+}
+
+.metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 1rem;
 }
 
 .card {
-  padding: 2em;
+  background-color: #ffffff;
+  padding: 1.25rem;
+  border-radius: 8px;
+  border: 1px solid #e0e0e0;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.02);
 }
 
-.read-the-docs {
-  color: #888;
+.metric-val {
+  font-size: 2rem;
+  font-weight: 700;
+  margin: 0.5rem 0 0 0;
+}
+
+.chart-bar-container {
+  display: flex;
+  height: 24px;
+  background-color: #eee;
+  border-radius: 12px;
+  overflow: hidden;
+  margin-top: 1rem;
+}
+
+.chart-bar-segment {
+  height: 100%;
+  transition: width 0.4s ease;
+}
+
+.chart-legend {
+  display: flex;
+  gap: 1.5rem;
+  margin-top: 0.75rem;
+  font-size: 0.9rem;
+}
+
+.empty-state {
+  text-align: center;
+  padding: 3rem;
+  background-color: #f9f9f9;
+  border-radius: 8px;
+  color: #666;
+  font-size: 1.1rem;
+}
+
+.upload-box {
+  border: 2px dashed #bbb;
+  padding: 3rem;
+  border-radius: 8px;
+  text-align: center;
+  background-color: #fafafa;
+}
+
+.input {
+  padding: 0.6rem 1rem;
+  border-radius: 6px;
+  border: 1px solid #ccc;
+  font-size: 0.9rem;
+  flex: 1;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 1rem;
+}
+
+.th {
+  padding: 0.75rem;
+  border-bottom: 2px solid #ccc;
+  font-size: 0.85rem;
+  color: #444;
+}
+
+.td {
+  padding: 0.75rem;
+  font-size: 0.9rem;
+}
+
+.badge {
+  background-color: #fff3e0;
+  color: #e65100;
+  padding: 0.25rem 0.6rem;
+  border-radius: 4px;
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.success-badge {
+  background-color: #e8f5e9;
+  color: #1b5e20;
+  padding: 0.25rem 0.6rem;
+  border-radius: 4px;
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.primary-btn {
+  background-color: #1976d2;
+  color: #fff;
+  border: none;
+  padding: 0.5rem 1rem;
+  border-radius: 4px;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.secondary-btn {
+  background-color: #f5f5f5;
+  color: #333;
+  border: 1px solid #ccc;
+  padding: 0.5rem 1rem;
+  border-radius: 4px;
+  cursor: pointer;
+  font-weight: 500;
+}
+
+.success-btn {
+  background-color: #2e7d32;
+  color: #fff;
+  border: none;
+  padding: 0.6rem 1.2rem;
+  border-radius: 4px;
+  cursor: pointer;
+  font-weight: 600;
+  margin-top: 0.5rem;
+}
+
+.extraction-form-box {
+  margin-top: 1rem;
+  padding: 1.25rem;
+  background-color: #f8f9fa;
+  border-radius: 8px;
+  border: 1px solid #e0e0e0;
+}
+
+.form-group {
+  display: flex;
+  flex-direction: column;
+  margin-bottom: 1rem;
+  flex: 1;
+}
+
+.label {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #555;
+  margin-bottom: 0.4rem;
+}
+
+.warning-text {
+  color: #d32f2f;
+  font-weight: 600;
+  font-size: 0.8rem;
 }

@@ -5,5 +5,9 @@ export const extractExpense = defineFunction({
   entry: './handler.ts',
   timeoutSeconds: 60, // Textract can take a few seconds
   runtime: 20,
-  resourceGroupName: 'storage'
+  resourceGroupName: 'storage',
+  environment: {
+    // This will be automatically populated by Amplify Data if configured correctly
+    // or you can inject it explicitly in backend.ts
+  }
 });
