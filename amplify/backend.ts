@@ -134,8 +134,15 @@ backend.extractExpense.resources.lambda.addToRolePolicy(
 // =======================================================================
 const documentTable = backend.data.resources.tables["DocumentRecord"];
 documentTable.grantReadWriteData(backend.extractExpense.resources.lambda);
-backend.extractExpense.addEnvironment("DOCUMENT_TABLE_NAME", documentTable.tableName);
+// ADD THIS LINE INSTEAD
 
+
+
+backend.extractExpense.addEnvironment("AMPLIFY_DATA_GRAPHQL_ENDPOINT", backend.data.resources.cfnResources.cfnGraphqlApi.attrGraphQlUrl);
+backend.extractExpense.addEnvironment(
+  "AMPLIFY_DATA_GRAPHQL_API_KEY", 
+  backend.data.resources.cfnResources.cfnApiKey!.attrApiKey
+);
 // =======================================================================
 // 5. DYNAMODB STREAM & SES EMAIL NOTIFICATION CONFIGURATION
 // =======================================================================
@@ -171,3 +178,5 @@ notifyCustomerFunction.addEventSource(new DynamoEventSource(documentTable, {
   startingPosition: lambda.StartingPosition.LATEST,
   retryAttempts: 3, 
 }));
+// 6. GRANT LAMBDA PERMISSION TO MUTATE APPSYNC (Triggers Real-time Subscriptions)
+backend.data.resources.graphqlApi.grantMutation(backend.extractExpense.resources.lambda);

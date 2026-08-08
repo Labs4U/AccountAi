@@ -8,9 +8,8 @@ const schema = a.schema({
       documentId: a.string().required(),
       
       // --- METADATA & LIFECYCLE ---
-      recordType: a.string(), // e.g., "DOCUMENT" or "PROFILE"
+      recordType: a.string(),
       docType: a.string(),
-      // Statuses: PENDING_CUSTOMER, CUSTOMER_APPROVED_CLEAN, CUSTOMER_APPROVED_FLAGGED, ACCOUNTANT_REVIEW, FINALIZED
       status: a.string(), 
       
       // --- STORAGE REFERENCES ---
@@ -23,26 +22,27 @@ const schema = a.schema({
       extractedTotal: a.float(),
       extractedTax: a.float(),
       extractedDate: a.string(),
-      vendorTRN: a.string(), // Tax Registration Number (Vendor)
+      vendorTRN: a.string(),
       
       // --- AI CONFIDENCE & VALIDATION ---
       aiConfidenceScore: a.float(),
-      isMathValid: a.boolean(), // Does Subtotal + Tax = Total?
+      isMathValid: a.boolean(),
       accountantNote: a.string(),
+
       // --- ACCOUNTING & COA MAPPING ---
-      mappedAccountCode: a.string(), // e.g., "6260"
-      mappedAccountName: a.string(), // e.g., "Fuel Expense"
+      mappedAccountCode: a.string(),
+      mappedAccountName: a.string(),
       
       // --- ORCHESTRATION ---
       rawTextractData: a.json(),
       stepFunctionTaskToken: a.string(),
 
-      // --- ⚙️ CONFIG & PROFILE SPECIFIC FIELDS (Single Table Design) ---
+      // --- ⚙️ CONFIG & PROFILE SPECIFIC FIELDS ---
       companyName: a.string(),
-      companyType: a.string(),    // e.g., "WLL", "LLC", "EST"
+      companyType: a.string(),    
       companyAddress: a.string(),
-      companyTrn: a.string(),     // Tax Registration Number (Customer's own business)
-      chartOfAccounts: a.json(),  // Array of { code, name }
+      companyTrn: a.string(),     
+      chartOfAccounts: a.json(),  
     })
     .identifier(['userId', 'documentId'])
     .secondaryIndexes((index) => [
@@ -50,11 +50,12 @@ const schema = a.schema({
       index('mappedAccountCode').queryField('listByAccountCode')
     ])
     .authorization((allow) => [
-      // Rule 1: The Customer (owner) has full CRUD access to their own records
+      // Rule 1: The Customer has full CRUD access to their own records
       allow.ownerDefinedIn('userId'),
       
-      // Rule 2: The Accountant (Admin group) can read and update ANY record in the table
-      allow.groups(['Admin']).to(['read', 'update'])
+      // Rule 2: The Accountant can read and update ANY record in the table
+      allow.groups(['Admin']).to(['read', 'update']),
+      allow.publicApiKey().to(['read', 'update'])
     ]),
 });
 
@@ -64,5 +65,8 @@ export const data = defineData({
   schema,
   authorizationModes: {
     defaultAuthorizationMode: 'userPool',
+    apiKeyAuthorizationMode: {
+      expiresInDays: 365 
+    }
   },
 });

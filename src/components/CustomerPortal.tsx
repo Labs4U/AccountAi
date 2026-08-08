@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef} from "react";
 import type { Schema } from "../../amplify/data/resource";
 import { generateClient } from "aws-amplify/data";
 import { fetchAuthSession } from "aws-amplify/auth";
@@ -13,6 +13,8 @@ export default function CustomerPortal() {
   
   // --- CONFIG / SETUP STATE ---
   const [userSub, setUserSub] = useState<string>("");
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const isMounted = useRef(true);
   const [configRecordId, setConfigRecordId] = useState<string | null>(null);
   const [companyName, setCompanyName] = useState("");
   const [companyType, setCompanyType] = useState("WLL");
@@ -27,6 +29,7 @@ export default function CustomerPortal() {
   // --- NEW: CUSTOM DROPDOWN STATE ---
   const [coaSearch, setCoaSearch] = useState("");
   const [showCoaDropdown, setShowCoaDropdown] = useState(false);
+  
 
   useEffect(() => {
     fetchAuthSession().then(session => {
@@ -120,33 +123,60 @@ export default function CustomerPortal() {
   const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file || !userSub) return;
+    
     setIsUploading(true);
+    setUploadProgress(0); 
+
     try {
       const documentId = `doc-${Date.now()}`;
       const ext = (file.name.split(".").pop() || "jpg").toLowerCase();
-      
-      const uploadOp = uploadData({ path: `${userSub}/raw/${documentId}.${ext}`, data: file });
-      const result = await uploadOp.result;
-      
-      await client.models.DocumentRecord.create({
+      const rawPath = `${userSub}/raw/${documentId}.${ext}`;
+      const finalPath = `${userSub}/${ext === 'pdf' ? 'invoice' : 'receipt'}/${documentId}.${ext}`;
+
+      // 1. Upload to S3 with Progress Tracking
+      await uploadData({ 
+        path: rawPath, 
+        data: file,
+        options: {
+          onProgress: ({ transferredBytes, totalBytes }) => {
+            if (totalBytes && isMounted.current) {
+              setUploadProgress(Math.round((transferredBytes / totalBytes) * 100));
+            }
+          }
+        }
+      }).result;
+
+      // 2. Create the exact record object with type-casting to satisfy the schema
+      const newDocRecord = {
         userId: userSub,
         documentId: documentId,
         recordType: "DOCUMENT",
         status: "PROCESSING", 
-        s3RawUri: `s3://account-ai-bh/${result.path}`,
-      });
-      alert(`Document uploaded!`);
-      setActiveTab("library");
+        s3RawUri: `s3://account-ai-bh/${rawPath}`,
+        s3FinalUri: `s3://account-ai-bh/${finalPath}`,
+        createdAt: new Date().toISOString()
+      } as Schema["DocumentRecord"]["type"]; // <-- Type assertion fixes the setDocuments error
+
+      // 3. TRUE OPTIMISTIC UI: Instantly update React state before AppSync finishes
+      if (isMounted.current) {
+        setDocuments(prev => [newDocRecord, ...prev]);
+        setIsUploading(false);
+        setUploadProgress(0);
+        setActiveTab("library"); 
+      }
+
+      // 4. Send the creation command to AppSync in the background
+      await client.models.DocumentRecord.create(newDocRecord);
+      
     } catch (err) {
-      alert("Failed to upload.");
-    } finally {
-      setIsUploading(false);
+      console.error("Upload failed:", err);
+      alert("Failed to upload document.");
+      if (isMounted.current) setIsUploading(false);
     }
   };
 
   const handleValidateExtraction = async (doc: Schema["DocumentRecord"]["type"], formData: any) => {
     try {
-      // Use our new custom React state string instead of FormData for the COA
       const [newCoaCode, newCoaName] = coaSearch.split(" - ");
       const newStatus = (doc.aiConfidenceScore ?? 100) < 90 || !doc.isMathValid 
         ? "CUSTOMER_APPROVED_FLAGGED" : "CUSTOMER_APPROVED_CLEAN";
@@ -160,7 +190,8 @@ export default function CustomerPortal() {
         extractedTax: formData.tax ? parseFloat(formData.tax) : null,
         extractedDate: formData.date || null,
         mappedAccountCode: newCoaCode || doc.mappedAccountCode,
-        mappedAccountName: newCoaName || doc.mappedAccountName
+        mappedAccountName: newCoaName || doc.mappedAccountName,
+        accountantNote: null // <-- CLEAR NOTE SO IT DOES NOT PERSIST AFTER RESOLUTION
       });
       
       setSelectedDocument(null);
@@ -248,12 +279,36 @@ export default function CustomerPortal() {
 
       {/* --- UPLOAD TAB --- */}
       {activeTab === "upload" && (
-        <div className="upload-box" style={{ marginTop: "2rem" }}>
-          <h2>Upload Financial Document</h2>
-          <input type="file" accept="application/pdf,image/*" onChange={handleFileUpload} disabled={isUploading} />
-          {isUploading && <p>Processing upload...</p>}
+  <div className="upload-box" style={{ marginTop: "2rem", textAlign: "center", padding: "3rem", background: "white", borderRadius: "12px", boxShadow: "0 2px 4px rgba(0,0,0,0.05)" }}>
+    <h2>Upload Financial Document</h2>
+    <p style={{ color: "#64748b", marginBottom: "1.5rem" }}>Upload invoices or receipts for automated AI extraction.</p>
+    
+    <input 
+      type="file" 
+      accept="application/pdf,image/*" 
+      onChange={handleFileUpload} 
+      disabled={isUploading} 
+      style={{ marginBottom: "1.5rem" }}
+    />
+
+    {/* 🟢 THIS READS uploadProgress AND RESOLVES THE COMPILER WARNING */}
+    {isUploading && (
+      <div style={{ width: "100%", maxWidth: "400px", margin: "0 auto" }}>
+        <p style={{ fontWeight: "bold", color: "#4f46e5", marginBottom: "0.5rem" }}>
+          Uploading to S3... {uploadProgress}%
+        </p>
+        <div style={{ width: "100%", backgroundColor: "#e2e8f0", borderRadius: "8px", overflow: "hidden", height: "12px" }}>
+          <div style={{ 
+            width: `${uploadProgress}%`, 
+            backgroundColor: "#4f46e5", 
+            height: "100%", 
+            transition: "width 0.2s ease-in-out" 
+          }} />
         </div>
-      )}
+      </div>
+    )}
+  </div>
+)}
 
       {/* --- LIBRARY TAB --- */}
       {activeTab === "library" && (
@@ -330,9 +385,18 @@ export default function CustomerPortal() {
                   vendorName: fd.get("vendorName"), total: fd.get("total"), tax: fd.get("tax"), date: fd.get("date")
                 });
               }}>
-                <div style={{ backgroundColor: "#e0f2fe", padding: "1rem", borderRadius: "8px", marginBottom: "1.5rem" }}>
-                  <strong>Action Required:</strong> Please verify the AI extracted data below.
-                </div>
+                {selectedDocument.accountantNote ? (
+  <div style={{ backgroundColor: "#fef3c7", borderLeft: "4px solid #f59e0b", padding: "1rem", borderRadius: "8px", marginBottom: "1.5rem" }}>
+    <strong style={{ color: "#92400e", fontSize: "1rem" }}>⚠️ Accountant Feedback:</strong>
+    <p style={{ margin: "0.5rem 0 0 0", color: "#78350f", fontWeight: "600", fontSize: "0.95rem" }}>
+      "{selectedDocument.accountantNote}"
+    </p>
+  </div>
+) : (
+  <div style={{ backgroundColor: "#e0f2fe", padding: "1rem", borderRadius: "8px", marginBottom: "1.5rem" }}>
+    <strong>Action Required:</strong> Please verify the AI extracted data below.
+  </div>
+)}
 
                 <div style={{ display: "flex", gap: "1rem", flexWrap: "wrap" }}>
                   <div className="form-group"><label>Vendor</label><input name="vendorName" defaultValue={selectedDocument.extractedVendor || ""} className="input" /></div>

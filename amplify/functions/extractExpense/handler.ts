@@ -1,12 +1,26 @@
 import { Handler } from 'aws-lambda';
 import { TextractClient, AnalyzeExpenseCommand } from '@aws-sdk/client-textract';
-import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient, UpdateCommand, GetCommand } from '@aws-sdk/lib-dynamodb';
 import { BedrockRuntimeClient, ConverseCommand } from '@aws-sdk/client-bedrock-runtime';
+import { Amplify } from 'aws-amplify';
+import { generateClient } from 'aws-amplify/data';
+import type { Schema } from '../../data/resource';
 
+// ---------------------------------------------------------
+// 1. CONFIGURE APPSYNC CLIENT FOR BACKEND IAM AUTHORIZATION
+// ---------------------------------------------------------
+Amplify.configure({
+  API: {
+    GraphQL: {
+      endpoint: process.env.AMPLIFY_DATA_GRAPHQL_ENDPOINT as string,
+      region: process.env.AWS_REGION as string,
+      defaultAuthMode: 'apiKey',
+      apiKey: process.env.AMPLIFY_DATA_GRAPHQL_API_KEY as string
+    }
+  }
+});
+
+const dataClient = generateClient<Schema>();
 const textract = new TextractClient({});
-const ddbClient = new DynamoDBClient({});
-const docClient = DynamoDBDocumentClient.from(ddbClient);
 const bedrock = new BedrockRuntimeClient({});
 
 interface ExtractionPayload {
@@ -19,11 +33,6 @@ export const handler: Handler<ExtractionPayload> = async (event) => {
   console.log("ExtractExpense triggered:", JSON.stringify(event, null, 2));
   const { bucket, key } = event;
 
-  const tableName = process.env.DOCUMENT_TABLE_NAME;
-  if (!tableName) {
-    throw new Error("DOCUMENT_TABLE_NAME environment variable is not set.");
-  }
-
   // Extract userId and documentId from the S3 Key pattern: {userId}/invoice/{docId}.extension
   const pathParts = key.split('/');
   const userId = pathParts[0]; 
@@ -32,17 +41,20 @@ export const handler: Handler<ExtractionPayload> = async (event) => {
 
   try {
     // ---------------------------------------------------------
-    // 1. FETCH CUSTOMER CONFIGURATION (Single Table Design)
+    // 2. FETCH CUSTOMER CONFIGURATION (Via AppSync)
     // ---------------------------------------------------------
-    let userCoaList = [];
+    let userCoaList: any[] = [];
     try {
-      const configRecord = await docClient.send(new GetCommand({
-        TableName: tableName,
-        Key: { userId, documentId: "CONFIG" }
-      }));
+      const { data: configRecord } = await dataClient.models.DocumentRecord.get({
+        userId: userId,
+        documentId: "CONFIG"
+      });
       
-      if (configRecord.Item && configRecord.Item.chartOfAccounts) {
-        userCoaList = configRecord.Item.chartOfAccounts;
+      if (configRecord && configRecord.chartOfAccounts) {
+        // AppSync AWSJSON fields come back as stringified JSON, so we parse it safely
+        userCoaList = typeof configRecord.chartOfAccounts === 'string' 
+          ? JSON.parse(configRecord.chartOfAccounts) 
+          : configRecord.chartOfAccounts;
       }
     } catch (err) {
       console.warn("Could not fetch CONFIG record. Proceeding with defaults.", err);
@@ -59,7 +71,7 @@ export const handler: Handler<ExtractionPayload> = async (event) => {
     }
 
     // ---------------------------------------------------------
-    // 2. TEXTRACT EXTRACTION
+    // 3. TEXTRACT EXTRACTION
     // ---------------------------------------------------------
     const textractResponse = await textract.send(
       new AnalyzeExpenseCommand({
@@ -97,7 +109,7 @@ export const handler: Handler<ExtractionPayload> = async (event) => {
         : Math.abs(calculatedSubtotal + tax - total) < 0.05;
 
     // ---------------------------------------------------------
-    // 3. AI AGENT REASONING (Amazon Bedrock)
+    // 4. AI AGENT REASONING (Amazon Bedrock)
     // ---------------------------------------------------------
     let finalCoaCode = "6350";
     let finalCoaName = "Miscellaneous Expenses";
@@ -119,17 +131,13 @@ export const handler: Handler<ExtractionPayload> = async (event) => {
     try {
       const bedrockResponse = await bedrock.send(
         new ConverseCommand({
-          modelId: 'us.amazon.nova-2-lite-v1:0', // You can change this to Haiku or Claude 3.5 Sonnet
+          modelId: 'us.amazon.nova-2-lite-v1:0',
           messages: [
-            {
-              role: 'user',
-              content: [{ text: promptContext }]
-            }
+            { role: 'user', content: [{ text: promptContext }] }
           ]
         })
       );
 
-      // Clean up the response (LLMs sometimes wrap JSON in markdown blocks)
       let resultText = bedrockResponse.output?.message?.content?.[0]?.text?.trim() || "{}";
       resultText = resultText.replace(/```json/g, '').replace(/```/g, '').trim();
       
@@ -144,45 +152,40 @@ export const handler: Handler<ExtractionPayload> = async (event) => {
     }
 
     // ---------------------------------------------------------
-    // 4. UPDATE DYNAMODB
+    // 5. UPDATE VIA APPSYNC (Triggers Frontend Subscriptions)
     // ---------------------------------------------------------
-    await docClient.send(new UpdateCommand({
-      TableName: tableName,
-      Key: { userId, documentId },
-      UpdateExpression: `SET 
-        extractedVendor = :v, 
-        extractedTotal = :t, 
-        extractedTax = :tx, 
-        extractedDate = :d, 
-        vendorTRN = :trn,
-        isMathValid = :math,
-        aiConfidenceScore = :conf,
-        mappedAccountCode = :coaCode,
-        mappedAccountName = :coaName,
-        s3FinalUri = :finalUri, 
-        #status = :s`,
-      ExpressionAttributeNames: {
-        "#status": "status"
-      },
-      ExpressionAttributeValues: {
-        ":v": vendorName,
-        ":t": total,
-        ":tx": tax,
-        ":d": date,
-        ":trn": trn,
-        ":math": isMathValid,
-        ":conf": lowestConfidence,
-        ":coaCode": finalCoaCode,
-        ":coaName": finalCoaName,
-        ":finalUri": `s3://${bucket}/${key}`, 
-        ":s": "PENDING_CUSTOMER" 
-      }
-    }));
+    await dataClient.models.DocumentRecord.update({
+      userId: userId,
+      documentId: documentId,
+      extractedVendor: vendorName,
+      extractedTotal: total,
+      extractedTax: tax,
+      extractedDate: date,
+      vendorTRN: trn,
+      isMathValid: isMathValid,
+      aiConfidenceScore: lowestConfidence,
+      mappedAccountCode: finalCoaCode,
+      mappedAccountName: finalCoaName,
+      s3FinalUri: `s3://${bucket}/${key}`, 
+      status: "PENDING_CUSTOMER" 
+    });
 
     return { success: true, documentId, status: "PENDING_CUSTOMER" };
 
   } catch (error) {
     console.error("Extraction workflow failed:", error);
+    
+    // Attempt to update status to FAILED via AppSync so the UI knows something went wrong
+    try {
+      await dataClient.models.DocumentRecord.update({
+        userId: userId,
+        documentId: documentId,
+        status: "PROCESSING_FAILED" 
+      });
+    } catch (updateErr) {
+      console.error("Could not update failure status in AppSync", updateErr);
+    }
+    
     throw error;
   }
 };
