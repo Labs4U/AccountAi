@@ -10,6 +10,10 @@ import * as events from 'aws-cdk-lib/aws-events';
 import * as targets from 'aws-cdk-lib/aws-events-targets';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as iam from 'aws-cdk-lib/aws-iam';
+import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
+import * as lambda from 'aws-cdk-lib/aws-lambda';
+import { NodejsFunction } from 'aws-cdk-lib/aws-lambda-nodejs'; 
+import { DynamoEventSource } from 'aws-cdk-lib/aws-lambda-event-sources';
 import { Duration } from 'aws-cdk-lib';
 
 // 1. Remove 'storage' from the backend definition
@@ -23,7 +27,7 @@ const backend = defineBackend({
 const workflowStack = backend.createStack('DocumentProcessingWorkflow');
 
 // =======================================================================
-// 1. WORKFLOW TASKS DEFINITION (Unchanged)
+// 1. WORKFLOW TASKS DEFINITION
 // =======================================================================
 const initProcessingTask = new sfn.Pass(workflowStack, 'InitProcessing_SetState', {
   parameters: {
@@ -69,25 +73,21 @@ const definition = initProcessingTask.next(classifyTask).next(routingChoice);
 
 const stateMachine = new sfn.StateMachine(workflowStack, 'DocProcessingStateMachine', {
   definitionBody: sfn.DefinitionBody.fromChainable(definition),
-  stateMachineType: sfn.StateMachineType.STANDARD, // <--- CHANGED THIS TO STANDARD
+  stateMachineType: sfn.StateMachineType.STANDARD, 
   timeout: Duration.minutes(5),
 });
 
 // =======================================================================
 // 2. CONNECT TO EXISTING S3 BUCKET & EVENTBRIDGE
 // =======================================================================
-
-// Reference your existing manual bucket
 const existingBucket = s3.Bucket.fromBucketName(workflowStack, 'AccountAiBucket', 'account-ai-bh');
 
-// EventBridge Rule listening for object creations in the raw folder
 const s3UploadRule = new events.Rule(workflowStack, 'S3UploadRule', {
   eventPattern: {
     source: ['aws.s3'],
     detailType: ['Object Created'],
     detail: {
       bucket: { name: [existingBucket.bucketName] },
-      // Put this back! EventBridge wildcard matching will now work securely.
       object: {
         key: [{ wildcard: "*/raw/*" }] 
       }
@@ -100,15 +100,15 @@ s3UploadRule.addTarget(new targets.SfnStateMachine(stateMachine));
 // =======================================================================
 // 3. IAM & BUCKET PERMISSIONS
 // =======================================================================
-
-// Grant Lambda read/write to the existing bucket
 existingBucket.grantReadWrite(backend.classifyDocument.resources.lambda);
 existingBucket.grantReadWrite(backend.extractExpense.resources.lambda);
 
-// Grant Customer/React users the ability to upload to this specific bucket
 const userS3Policy = new iam.PolicyStatement({
-  actions: ['s3:PutObject', 's3:GetObject', 's3:DeleteObject'],
-  resources: ['arn:aws:s3:::account-ai-bh/*'] // CHANGED
+  actions: ['s3:PutObject', 's3:GetObject', 's3:DeleteObject', 's3:ListBucket'],
+  resources: [
+    'arn:aws:s3:::account-ai-bh/*', 
+    'arn:aws:s3:::account-ai-bh'    
+  ]
 });
 backend.auth.resources.authenticatedUserIamRole.addToPrincipalPolicy(userS3Policy);
 if (backend.auth.resources.groups) {
@@ -130,8 +130,44 @@ backend.extractExpense.resources.lambda.addToRolePolicy(
 );
 
 // =======================================================================
-// 4. DYNAMODB INTEGRATION (Unchanged)
+// 4. DYNAMODB INTEGRATION 
 // =======================================================================
 const documentTable = backend.data.resources.tables["DocumentRecord"];
 documentTable.grantReadWriteData(backend.extractExpense.resources.lambda);
 backend.extractExpense.addEnvironment("DOCUMENT_TABLE_NAME", documentTable.tableName);
+
+// =======================================================================
+// 5. DYNAMODB STREAM & SES EMAIL NOTIFICATION CONFIGURATION
+// =======================================================================
+
+// A. Forcefully enable the DynamoDB Stream
+const cfnTable = backend.data.resources.cfnResources.amplifyDynamoDbTables["DocumentRecord"];
+
+cfnTable.streamSpecification = {
+  streamViewType: dynamodb.StreamViewType.NEW_AND_OLD_IMAGES
+};
+
+// B. Define the Notification Lambda Function
+const notifyCustomerFunction = new NodejsFunction(workflowStack, 'NotifyCustomerLambda', {
+  entry: './amplify/functions/notifyCustomer/handler.ts',
+  environment: {
+    USER_POOL_ID: backend.auth.resources.userPool.userPoolId,
+    SENDER_EMAIL: 'samir.amri@gmail.com'
+  }
+});
+
+// C. Grant Permissions (Cognito, SES, and DynamoDB Stream reading)
+notifyCustomerFunction.addToRolePolicy(new iam.PolicyStatement({
+  actions: [
+    'cognito-idp:AdminGetUser',
+    'ses:SendEmail',
+    'ses:VerifyEmailIdentity'
+  ],
+  resources: ['*']
+}));
+
+// D. Attach the DynamoDB Stream to the Lambda Function
+notifyCustomerFunction.addEventSource(new DynamoEventSource(documentTable, {
+  startingPosition: lambda.StartingPosition.LATEST,
+  retryAttempts: 3, 
+}));

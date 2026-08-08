@@ -3,38 +3,46 @@ import { type ClientSchema, a, defineData } from '@aws-amplify/backend';
 const schema = a.schema({
   DocumentRecord: a
     .model({
-      // Composite Primary Key mimic (PK & SK)
+      // --- CORE IDENTIFIERS (Composite Primary Key) ---
       userId: a.string().required(),
       documentId: a.string().required(),
       
-      // Metadata and State Lifecycle
+      // --- METADATA & LIFECYCLE ---
+      recordType: a.string(), // e.g., "DOCUMENT" or "PROFILE"
       docType: a.string(),
       // Statuses: PENDING_CUSTOMER, CUSTOMER_APPROVED_CLEAN, CUSTOMER_APPROVED_FLAGGED, ACCOUNTANT_REVIEW, FINALIZED
       status: a.string(), 
       
-      // Storage References
+      // --- STORAGE REFERENCES ---
       s3RawUri: a.string(),
       s3RedactedUri: a.string(),
       s3FinalUri: a.string(),
       
-      // Extracted Data (Flat fields for easy DynamoDB querying)
+      // --- EXTRACTED DOCUMENT DATA ---
       extractedVendor: a.string(),
       extractedTotal: a.float(),
       extractedTax: a.float(),
-      extractedDate: a.date(),
-      vendorTRN: a.string(), // Tax Registration Number
+      extractedDate: a.string(),
+      vendorTRN: a.string(), // Tax Registration Number (Vendor)
       
-      // AI Confidence & Validation
+      // --- AI CONFIDENCE & VALIDATION ---
       aiConfidenceScore: a.float(),
       isMathValid: a.boolean(), // Does Subtotal + Tax = Total?
-      
-      // Accounting & COA Mapping
+      accountantNote: a.string(),
+      // --- ACCOUNTING & COA MAPPING ---
       mappedAccountCode: a.string(), // e.g., "6260"
       mappedAccountName: a.string(), // e.g., "Fuel Expense"
       
-      // Raw Payloads & Orchestration
+      // --- ORCHESTRATION ---
       rawTextractData: a.json(),
       stepFunctionTaskToken: a.string(),
+
+      // --- ⚙️ CONFIG & PROFILE SPECIFIC FIELDS (Single Table Design) ---
+      companyName: a.string(),
+      companyType: a.string(),    // e.g., "WLL", "LLC", "EST"
+      companyAddress: a.string(),
+      companyTrn: a.string(),     // Tax Registration Number (Customer's own business)
+      chartOfAccounts: a.json(),  // Array of { code, name }
     })
     .identifier(['userId', 'documentId'])
     .secondaryIndexes((index) => [
