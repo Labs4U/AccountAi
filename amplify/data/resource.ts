@@ -1,4 +1,5 @@
 import { type ClientSchema, a, defineData } from '@aws-amplify/backend';
+import { generateReports } from '../functions/generateReports/resource'; // 🟢 Added import for the Lambda
 
 const schema = a.schema({
   DocumentRecord: a
@@ -6,7 +7,7 @@ const schema = a.schema({
       // --- CORE IDENTIFIERS (Composite Primary Key) ---
       userId: a.string().required(),
       documentId: a.string().required(),
-      
+   
       // --- METADATA & LIFECYCLE ---
       recordType: a.string(),
       docType: a.string(),
@@ -57,6 +58,13 @@ const schema = a.schema({
       allow.groups(['Admin']).to(['read', 'update']),
       allow.publicApiKey().to(['read', 'update'])
     ]),
+
+  // 🟢 NEW: Custom Mutation to trigger the Report Lambda manually
+  triggerReportsManual: a
+    .mutation()
+    .returns(a.json())
+    .authorization((allow) => [allow.authenticated()])
+    .handler(a.handler.function(generateReports)),
 });
 
 export type Schema = ClientSchema<typeof schema>;

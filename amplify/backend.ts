@@ -3,6 +3,7 @@ import { auth } from './auth/resource';
 import { data } from './data/resource';
 import { classifyDocument } from './functions/classifyDocument/resource';
 import { extractExpense } from './functions/extractExpense/resource';
+import { generateReports } from './functions/generateReports/resource';
 
 import * as sfn from 'aws-cdk-lib/aws-stepfunctions';
 import * as tasks from 'aws-cdk-lib/aws-stepfunctions-tasks';
@@ -22,6 +23,7 @@ const backend = defineBackend({
   data,
   classifyDocument,
   extractExpense,
+  generateReports
 });
 
 const workflowStack = backend.createStack('DocumentProcessingWorkflow');
@@ -135,7 +137,7 @@ backend.extractExpense.resources.lambda.addToRolePolicy(
 const documentTable = backend.data.resources.tables["DocumentRecord"];
 documentTable.grantReadWriteData(backend.extractExpense.resources.lambda);
 // ADD THIS LINE INSTEAD
-
+const extractExpenseLambda = backend.extractExpense.resources.lambda as lambda.Function;
 
 
 backend.extractExpense.addEnvironment("AMPLIFY_DATA_GRAPHQL_ENDPOINT", backend.data.resources.cfnResources.cfnGraphqlApi.attrGraphQlUrl);
@@ -180,3 +182,20 @@ notifyCustomerFunction.addEventSource(new DynamoEventSource(documentTable, {
 }));
 // 6. GRANT LAMBDA PERMISSION TO MUTATE APPSYNC (Triggers Real-time Subscriptions)
 backend.data.resources.graphqlApi.grantMutation(backend.extractExpense.resources.lambda);
+// =======================================================================
+// 6. MONTHLY COMPLIANCE REPORT GENERATOR (MOIC & NBR)
+// =======================================================================
+const reportsLambda = backend.generateReports.resources.lambda as lambda.Function;
+
+existingBucket.grantReadWrite(reportsLambda);
+
+reportsLambda.addEnvironment('AMPLIFY_DATA_GRAPHQL_ENDPOINT', backend.data.resources.cfnResources.cfnGraphqlApi.attrGraphQlUrl);
+reportsLambda.addEnvironment('AMPLIFY_DATA_GRAPHQL_API_KEY', backend.data.resources.cfnResources.cfnApiKey!.attrApiKey);
+reportsLambda.addEnvironment('BUCKET_NAME', existingBucket.bucketName);
+
+// EventBridge Scheduler Rule (Triggers on the 1st of every month at 06:00 UTC)
+const monthlyCronRule = new events.Rule(workflowStack, 'MonthlyReportsCronRule', {
+  schedule: events.Schedule.cron({ day: '1', hour: '6', minute: '0' }),
+});
+
+monthlyCronRule.addTarget(new targets.LambdaFunction(reportsLambda));

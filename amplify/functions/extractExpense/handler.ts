@@ -51,22 +51,35 @@ export const handler: Handler<ExtractionPayload> = async (event) => {
     // ---------------------------------------------------------
     // 1. FETCH CUSTOMER CONFIGURATION (Native GraphQL)
     // ---------------------------------------------------------
+    // ---------------------------------------------------------
+    // 1. FETCH CUSTOMER CONFIGURATION (Native GraphQL)
+    // ---------------------------------------------------------
     let userCoaList: any[] = [];
+    let userCompanyName: string | null = null;
+    let userCompanyTrn: string | null = null;
+
     try {
       const getQuery = `
         query GetDocumentRecord($userId: String!, $documentId: String!) {
           getDocumentRecord(userId: $userId, documentId: $documentId) {
             chartOfAccounts
+            companyName
+            companyTrn
           }
         }
       `;
       const configRes = await executeGraphQL(getQuery, { userId, documentId: "CONFIG" });
       const configRecord = configRes?.getDocumentRecord;
       
-      if (configRecord && configRecord.chartOfAccounts) {
-        userCoaList = typeof configRecord.chartOfAccounts === 'string' 
-          ? JSON.parse(configRecord.chartOfAccounts) 
-          : configRecord.chartOfAccounts;
+      if (configRecord) {
+        userCompanyName = configRecord.companyName || null;
+        userCompanyTrn = configRecord.companyTrn || null;
+
+        if (configRecord.chartOfAccounts) {
+          userCoaList = typeof configRecord.chartOfAccounts === 'string' 
+            ? JSON.parse(configRecord.chartOfAccounts) 
+            : configRecord.chartOfAccounts;
+        }
       }
     } catch (err) {
       console.warn("Could not fetch CONFIG record. Proceeding with defaults.", err);
@@ -168,6 +181,8 @@ export const handler: Handler<ExtractionPayload> = async (event) => {
         updateDocumentRecord(input: $input) {
           userId
           documentId
+          companyName
+          companyTrn
           recordType
           docType
           status
@@ -194,6 +209,8 @@ export const handler: Handler<ExtractionPayload> = async (event) => {
       input: {
         userId: userId,
         documentId: documentId,
+        companyName: userCompanyName, // 🟢 Stamp Company Name
+        companyTrn: userCompanyTrn,   // 🟢 Stamp Company TRN
         extractedVendor: vendorName,
         extractedTotal: total,
         extractedTax: tax,
