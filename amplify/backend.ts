@@ -89,7 +89,7 @@ const s3UploadRule = new events.Rule(workflowStack, 'S3UploadRule', {
     detail: {
       bucket: { name: [existingBucket.bucketName] },
       object: {
-        key: [{ wildcard: "*/raw/*" }] 
+        key: [{ wildcard: "*/raw/*" }] // Restored to watch the Inbox
       }
     }
   }

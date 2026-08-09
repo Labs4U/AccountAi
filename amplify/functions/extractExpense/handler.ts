@@ -1,27 +1,35 @@
 import { Handler } from 'aws-lambda';
 import { TextractClient, AnalyzeExpenseCommand } from '@aws-sdk/client-textract';
 import { BedrockRuntimeClient, ConverseCommand } from '@aws-sdk/client-bedrock-runtime';
-import { Amplify } from 'aws-amplify';
-import { generateClient } from 'aws-amplify/data';
-import type { Schema } from '../../data/resource';
 
-// ---------------------------------------------------------
-// 1. CONFIGURE APPSYNC CLIENT FOR BACKEND IAM AUTHORIZATION
-// ---------------------------------------------------------
-Amplify.configure({
-  API: {
-    GraphQL: {
-      endpoint: process.env.AMPLIFY_DATA_GRAPHQL_ENDPOINT as string,
-      region: process.env.AWS_REGION as string,
-      defaultAuthMode: 'apiKey',
-      apiKey: process.env.AMPLIFY_DATA_GRAPHQL_API_KEY as string
-    }
-  }
-});
-
-const dataClient = generateClient<Schema>();
 const textract = new TextractClient({});
 const bedrock = new BedrockRuntimeClient({});
+
+// ---------------------------------------------------------
+// HELPER: NATIVE GRAPHQL FETCH (Replaces Amplify Client)
+// ---------------------------------------------------------
+const executeGraphQL = async (query: string, variables: any) => {
+  const endpoint = process.env.AMPLIFY_DATA_GRAPHQL_ENDPOINT;
+  const apiKey = process.env.AMPLIFY_DATA_GRAPHQL_API_KEY;
+
+  if (!endpoint || !apiKey) throw new Error("Missing AppSync environment variables.");
+
+  const response = await fetch(endpoint, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': apiKey
+    },
+    body: JSON.stringify({ query, variables })
+  });
+
+  const json = await response.json();
+  if (json.errors) {
+    console.error("AppSync Error:", JSON.stringify(json.errors, null, 2));
+    throw new Error(json.errors[0].message);
+  }
+  return json.data;
+};
 
 interface ExtractionPayload {
   documentType: string;
@@ -33,7 +41,7 @@ export const handler: Handler<ExtractionPayload> = async (event) => {
   console.log("ExtractExpense triggered:", JSON.stringify(event, null, 2));
   const { bucket, key } = event;
 
-  // Extract userId and documentId from the S3 Key pattern: {userId}/invoice/{docId}.extension
+  // Extract userId and documentId from the S3 Key
   const pathParts = key.split('/');
   const userId = pathParts[0]; 
   const fileName = pathParts.pop() || '';
@@ -41,17 +49,21 @@ export const handler: Handler<ExtractionPayload> = async (event) => {
 
   try {
     // ---------------------------------------------------------
-    // 2. FETCH CUSTOMER CONFIGURATION (Via AppSync)
+    // 1. FETCH CUSTOMER CONFIGURATION (Native GraphQL)
     // ---------------------------------------------------------
     let userCoaList: any[] = [];
     try {
-      const { data: configRecord } = await dataClient.models.DocumentRecord.get({
-        userId: userId,
-        documentId: "CONFIG"
-      });
+      const getQuery = `
+        query GetDocumentRecord($userId: String!, $documentId: String!) {
+          getDocumentRecord(userId: $userId, documentId: $documentId) {
+            chartOfAccounts
+          }
+        }
+      `;
+      const configRes = await executeGraphQL(getQuery, { userId, documentId: "CONFIG" });
+      const configRecord = configRes?.getDocumentRecord;
       
       if (configRecord && configRecord.chartOfAccounts) {
-        // AppSync AWSJSON fields come back as stringified JSON, so we parse it safely
         userCoaList = typeof configRecord.chartOfAccounts === 'string' 
           ? JSON.parse(configRecord.chartOfAccounts) 
           : configRecord.chartOfAccounts;
@@ -60,7 +72,6 @@ export const handler: Handler<ExtractionPayload> = async (event) => {
       console.warn("Could not fetch CONFIG record. Proceeding with defaults.", err);
     }
 
-    // Default fallback COA if customer hasn't set one up yet
     if (userCoaList.length === 0) {
       userCoaList = [
         { code: "6220", name: "Telephone & Internet" },
@@ -71,7 +82,7 @@ export const handler: Handler<ExtractionPayload> = async (event) => {
     }
 
     // ---------------------------------------------------------
-    // 3. TEXTRACT EXTRACTION
+    // 2. TEXTRACT EXTRACTION
     // ---------------------------------------------------------
     const textractResponse = await textract.send(
       new AnalyzeExpenseCommand({
@@ -109,7 +120,7 @@ export const handler: Handler<ExtractionPayload> = async (event) => {
         : Math.abs(calculatedSubtotal + tax - total) < 0.05;
 
     // ---------------------------------------------------------
-    // 4. AI AGENT REASONING (Amazon Bedrock)
+    // 3. AI AGENT REASONING (Amazon Bedrock)
     // ---------------------------------------------------------
     let finalCoaCode = "6350";
     let finalCoaName = "Miscellaneous Expenses";
@@ -132,9 +143,7 @@ export const handler: Handler<ExtractionPayload> = async (event) => {
       const bedrockResponse = await bedrock.send(
         new ConverseCommand({
           modelId: 'us.amazon.nova-2-lite-v1:0',
-          messages: [
-            { role: 'user', content: [{ text: promptContext }] }
-          ]
+          messages: [{ role: 'user', content: [{ text: promptContext }] }]
         })
       );
 
@@ -145,29 +154,58 @@ export const handler: Handler<ExtractionPayload> = async (event) => {
       if (agentDecision.code && agentDecision.name) {
         finalCoaCode = agentDecision.code;
         finalCoaName = agentDecision.name;
-        console.log(`AI Agent successfully mapped ${vendorName} to ${finalCoaCode} - ${finalCoaName}`);
+        console.log(`AI Mapped ${vendorName} to ${finalCoaCode} - ${finalCoaName}`);
       }
     } catch (agentErr) {
       console.warn("AI Agent COA mapping failed, falling back to Miscellaneous.", agentErr);
     }
 
+   // ---------------------------------------------------------
+    // 4. UPDATE VIA APPSYNC (Triggers Frontend Subscriptions)
     // ---------------------------------------------------------
-    // 5. UPDATE VIA APPSYNC (Triggers Frontend Subscriptions)
-    // ---------------------------------------------------------
-    await dataClient.models.DocumentRecord.update({
-      userId: userId,
-      documentId: documentId,
-      extractedVendor: vendorName,
-      extractedTotal: total,
-      extractedTax: tax,
-      extractedDate: date,
-      vendorTRN: trn,
-      isMathValid: isMathValid,
-      aiConfidenceScore: lowestConfidence,
-      mappedAccountCode: finalCoaCode,
-      mappedAccountName: finalCoaName,
-      s3FinalUri: `s3://${bucket}/${key}`, 
-      status: "PENDING_CUSTOMER" 
+    const updateMutation = `
+      mutation UpdateDocumentRecord($input: UpdateDocumentRecordInput!) {
+        updateDocumentRecord(input: $input) {
+          userId
+          documentId
+          recordType
+          docType
+          status
+          s3RawUri
+          s3FinalUri
+          extractedVendor
+          extractedTotal
+          extractedTax
+          extractedDate
+          vendorTRN
+          aiConfidenceScore
+          isMathValid
+          accountantNote
+          mappedAccountCode
+          mappedAccountName
+          createdAt
+          updatedAt
+          __typename
+        }
+      }
+    `;
+
+    await executeGraphQL(updateMutation, {
+      input: {
+        userId: userId,
+        documentId: documentId,
+        extractedVendor: vendorName,
+        extractedTotal: total,
+        extractedTax: tax,
+        extractedDate: date,
+        vendorTRN: trn,
+        isMathValid: isMathValid,
+        aiConfidenceScore: lowestConfidence,
+        mappedAccountCode: finalCoaCode,
+        mappedAccountName: finalCoaName,
+        s3FinalUri: `s3://${bucket}/${key}`, 
+        status: "PENDING_CUSTOMER" 
+      }
     });
 
     return { success: true, documentId, status: "PENDING_CUSTOMER" };
@@ -175,12 +213,19 @@ export const handler: Handler<ExtractionPayload> = async (event) => {
   } catch (error) {
     console.error("Extraction workflow failed:", error);
     
-    // Attempt to update status to FAILED via AppSync so the UI knows something went wrong
+    // 🟢 Also fix the failure mutation to return userId!
     try {
-      await dataClient.models.DocumentRecord.update({
-        userId: userId,
-        documentId: documentId,
-        status: "PROCESSING_FAILED" 
+      const failMutation = `
+        mutation UpdateDocumentRecord($input: UpdateDocumentRecordInput!) {
+          updateDocumentRecord(input: $input) { 
+            userId
+            documentId 
+            status 
+          }
+        }
+      `;
+      await executeGraphQL(failMutation, {
+        input: { userId, documentId, status: "PROCESSING_FAILED" }
       });
     } catch (updateErr) {
       console.error("Could not update failure status in AppSync", updateErr);

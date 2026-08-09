@@ -56,30 +56,33 @@ export default function AccountantDashboard() {
     }
   };
 
-  const fetchDocuments = async (token?: string | null) => {
+useEffect(() => {
+    // 1. Fetch company names first so the table knows who is who
+    fetchProfiles();
+
+    // 2. Open a real-time WebSocket connection for all documents
     setIsLoading(true);
-    try {
-      const { data, nextToken: newNextToken } = await client.models.DocumentRecord.list({
-        filter: { recordType: { ne: "PROFILE" } },
-        limit: 100, 
-        nextToken: token || undefined,
-      });
+    const subscription = client.models.DocumentRecord.observeQuery().subscribe({
+      next: (data) => {
+        // Filter out the CONFIG/PROFILE records
+        const accountantDocs = data.items.filter(doc => doc.recordType !== "PROFILE");
 
-      const sortedDocs = data.sort((a, b) => 
-        (b.createdAt || "").localeCompare(a.createdAt || "")
-      );
+        // Sort by newest first and instantly push to the UI table
+        const sortedDocs = [...accountantDocs].sort((a, b) => 
+          (b.createdAt || "").localeCompare(a.createdAt || "")
+        );
 
-      setDocuments(prev => token ? [...prev, ...sortedDocs] : sortedDocs);
-      setNextToken(newNextToken || null);
-    } catch (err) {
-      console.error("Failed to fetch documents", err);
-    } finally {
-      setIsLoading(false);
-    }
-  };
+        setDocuments(sortedDocs);
+        setIsLoading(false);
+      },
+      error: (err) => {
+        console.error("Accountant subscription error:", err);
+        setIsLoading(false);
+      }
+    });
 
-  useEffect(() => {
-    fetchProfiles().then(() => fetchDocuments());
+    // 3. Clean up the WebSocket when closing the page
+    return () => subscription.unsubscribe();
   }, []);
 
   const handleApproveAndFinalize = async (doc: Schema["DocumentRecord"]["type"]) => {

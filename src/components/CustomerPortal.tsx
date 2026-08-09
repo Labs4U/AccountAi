@@ -29,7 +29,8 @@ export default function CustomerPortal() {
   // --- NEW: CUSTOM DROPDOWN STATE ---
   const [coaSearch, setCoaSearch] = useState("");
   const [showCoaDropdown, setShowCoaDropdown] = useState(false);
-  
+  const [editForm, setEditForm] = useState({ vendorName: "", date: "", total: "", tax: "" });
+  const [isApproving, setIsApproving] = useState(false);
 
   useEffect(() => {
     fetchAuthSession().then(session => {
@@ -130,10 +131,10 @@ export default function CustomerPortal() {
     try {
       const documentId = `doc-${Date.now()}`;
       const ext = (file.name.split(".").pop() || "jpg").toLowerCase();
+      
+      // 1. Upload strictly to the neutral staging area (Inbox)
       const rawPath = `${userSub}/raw/${documentId}.${ext}`;
-      const finalPath = `${userSub}/${ext === 'pdf' ? 'invoice' : 'receipt'}/${documentId}.${ext}`;
 
-      // 1. Upload to S3 with Progress Tracking
       await uploadData({ 
         path: rawPath, 
         data: file,
@@ -146,18 +147,16 @@ export default function CustomerPortal() {
         }
       }).result;
 
-      // 2. Create the exact record object with type-casting to satisfy the schema
+      // 2. Create the record. We don't know the final URI yet because the AI hasn't moved it!
       const newDocRecord = {
         userId: userSub,
         documentId: documentId,
         recordType: "DOCUMENT",
         status: "PROCESSING", 
-        s3RawUri: `s3://account-ai-bh/${rawPath}`,
-        s3FinalUri: `s3://account-ai-bh/${finalPath}`,
-        createdAt: new Date().toISOString()
-      } as Schema["DocumentRecord"]["type"]; // <-- Type assertion fixes the setDocuments error
+        s3RawUri: `s3://account-ai-bh/${rawPath}`
+        // Notice we leave s3FinalUri out. The backend Lambda will update this later!
+      } as Schema["DocumentRecord"]["type"];
 
-      // 3. TRUE OPTIMISTIC UI: Instantly update React state before AppSync finishes
       if (isMounted.current) {
         setDocuments(prev => [newDocRecord, ...prev]);
         setIsUploading(false);
@@ -165,12 +164,10 @@ export default function CustomerPortal() {
         setActiveTab("library"); 
       }
 
-      // 4. Send the creation command to AppSync in the background
       await client.models.DocumentRecord.create(newDocRecord);
       
     } catch (err) {
       console.error("Upload failed:", err);
-      alert("Failed to upload document.");
       if (isMounted.current) setIsUploading(false);
     }
   };
@@ -323,12 +320,20 @@ export default function CustomerPortal() {
             <tbody>
               {documents.map((doc) => (
                 <tr 
-                  key={doc.documentId} 
+                 key={doc.documentId} 
                   onClick={() => {
                     setSelectedDocument(doc);
-                    // Pre-fill the custom search state when the modal opens
                     setCoaSearch(doc.mappedAccountCode ? `${doc.mappedAccountCode} - ${doc.mappedAccountName}` : "");
+                    
+                    // 🟢 NEW: Lock the initial values into React state
+                    setEditForm({
+                      vendorName: doc.extractedVendor || "",
+                      date: doc.extractedDate || "",
+                      total: doc.extractedTotal?.toString() || "",
+                      tax: doc.extractedTax?.toString() || "",
+                    });
                   }}
+                  
                   style={{ 
                     borderBottom: "1px solid #eee", 
                     cursor: "pointer",
@@ -351,6 +356,7 @@ export default function CustomerPortal() {
       )}
 
       {/* --- DOCUMENT REVIEW MODAL --- */}
+      {/* --- DOCUMENT REVIEW MODAL --- */}
       {selectedDocument && (
         <div style={{
           position: "fixed", top: 0, left: 0, width: "100vw", height: "100vh",
@@ -364,47 +370,83 @@ export default function CustomerPortal() {
               <h2 style={{ margin: 0 }}>Document: {selectedDocument.documentId}</h2>
               <div style={{ display: "flex", gap: "12px", alignItems: "center" }}>
                 <button 
-  type="button" 
-  onClick={() => handleViewDocument(selectedDocument)} // <-- PASS THE OBJECT
-  style={{ 
-    fontSize: "0.75rem", padding: "4px 8px", backgroundColor: "#f1f5f9", 
-    border: "1px solid #cbd5e1", borderRadius: "4px", cursor: "pointer", color: "#334155"
-  }}
->
-  👁️ View Original
-</button>
+                  type="button" 
+                  onClick={() => handleViewDocument(selectedDocument)} 
+                  style={{ 
+                    fontSize: "0.75rem", padding: "4px 8px", backgroundColor: "#f1f5f9", 
+                    border: "1px solid #cbd5e1", borderRadius: "4px", cursor: "pointer", color: "#334155"
+                  }}
+                >
+                  👁️ View Original
+                </button>
                 <button onClick={() => setSelectedDocument(null)} style={{ background: "none", border: "none", fontSize: "1.5rem", cursor: "pointer", color: "#64748b" }}>✖</button>
               </div>
             </div>
 
             {selectedDocument.status === "PENDING_CUSTOMER" ? (
-              <form onSubmit={(e) => {
+              <form onSubmit={async (e) => {
                 e.preventDefault();
-                const fd = new FormData(e.currentTarget);
-                handleValidateExtraction(selectedDocument, {
-                  vendorName: fd.get("vendorName"), total: fd.get("total"), tax: fd.get("tax"), date: fd.get("date")
-                });
+                if (!selectedDocument) return;
+                
+                setIsApproving(true);
+                try {
+                  const [newCoaCode, newCoaName] = coaSearch.split(" - ");
+                  const newStatus = (selectedDocument.aiConfidenceScore ?? 100) < 90 || !selectedDocument.isMathValid 
+                    ? "CUSTOMER_APPROVED_FLAGGED" : "CUSTOMER_APPROVED_CLEAN";
+
+                  await client.models.DocumentRecord.update({
+                    userId: selectedDocument.userId,
+                    documentId: selectedDocument.documentId,
+                    status: newStatus, 
+                    extractedVendor: editForm.vendorName,
+                    extractedTotal: editForm.total ? parseFloat(editForm.total) : null,
+                    extractedTax: editForm.tax ? parseFloat(editForm.tax) : null,
+                    extractedDate: editForm.date || null,
+                    mappedAccountCode: newCoaCode || selectedDocument.mappedAccountCode,
+                    mappedAccountName: newCoaName || selectedDocument.mappedAccountName,
+                    accountantNote: null 
+                  });
+                  
+                  setSelectedDocument(null);
+                } catch (err) {
+                  alert("Failed to save changes.");
+                } finally {
+                  setIsApproving(false);
+                }
               }}>
                 {selectedDocument.accountantNote ? (
-  <div style={{ backgroundColor: "#fef3c7", borderLeft: "4px solid #f59e0b", padding: "1rem", borderRadius: "8px", marginBottom: "1.5rem" }}>
-    <strong style={{ color: "#92400e", fontSize: "1rem" }}>⚠️ Accountant Feedback:</strong>
-    <p style={{ margin: "0.5rem 0 0 0", color: "#78350f", fontWeight: "600", fontSize: "0.95rem" }}>
-      "{selectedDocument.accountantNote}"
-    </p>
-  </div>
-) : (
-  <div style={{ backgroundColor: "#e0f2fe", padding: "1rem", borderRadius: "8px", marginBottom: "1.5rem" }}>
-    <strong>Action Required:</strong> Please verify the AI extracted data below.
-  </div>
-)}
+                  <div style={{ backgroundColor: "#fef3c7", borderLeft: "4px solid #f59e0b", padding: "1rem", borderRadius: "8px", marginBottom: "1.5rem" }}>
+                    <strong style={{ color: "#92400e", fontSize: "1rem" }}>⚠️ Accountant Feedback:</strong>
+                    <p style={{ margin: "0.5rem 0 0 0", color: "#78350f", fontWeight: "600", fontSize: "0.95rem" }}>
+                      "{selectedDocument.accountantNote}"
+                    </p>
+                  </div>
+                ) : (
+                  <div style={{ backgroundColor: "#e0f2fe", padding: "1rem", borderRadius: "8px", marginBottom: "1.5rem" }}>
+                    <strong>Action Required:</strong> Please verify the AI extracted data below.
+                  </div>
+                )}
 
+                {/* 🟢 HERE ARE THE RESTORED FORM FIELDS */}
                 <div style={{ display: "flex", gap: "1rem", flexWrap: "wrap" }}>
-                  <div className="form-group"><label>Vendor</label><input name="vendorName" defaultValue={selectedDocument.extractedVendor || ""} className="input" /></div>
-                  <div className="form-group"><label>Date</label><input name="date" defaultValue={selectedDocument.extractedDate || ""} className="input" /></div>
-                  <div className="form-group"><label>Total</label><input name="total" type="number" step="0.01" defaultValue={selectedDocument.extractedTotal || ""} className="input" /></div>
-                  <div className="form-group"><label>Tax</label><input name="tax" type="number" step="0.01" defaultValue={selectedDocument.extractedTax || ""} className="input" /></div>
+                  <div className="form-group">
+                    <label>Vendor</label>
+                    <input value={editForm.vendorName} onChange={e => setEditForm({...editForm, vendorName: e.target.value})} className="input" />
+                  </div>
+                  <div className="form-group">
+                    <label>Date</label>
+                    <input value={editForm.date} onChange={e => setEditForm({...editForm, date: e.target.value})} className="input" />
+                  </div>
+                  <div className="form-group">
+                    <label>Total</label>
+                    <input type="number" step="0.01" value={editForm.total} onChange={e => setEditForm({...editForm, total: e.target.value})} className="input" />
+                  </div>
+                  <div className="form-group">
+                    <label>Tax</label>
+                    <input type="number" step="0.01" value={editForm.tax} onChange={e => setEditForm({...editForm, tax: e.target.value})} className="input" />
+                  </div>
 
-                  {/* CUSTOM SEARCHABLE DROPDOWN (Replacing datalist) */}
+                  {/* CUSTOM SEARCHABLE DROPDOWN */}
                   <div className="form-group" style={{ flexBasis: "100%", marginTop: "1rem", position: "relative" }}>
                     <label style={{ fontWeight: "bold", color: "#4f46e5", display: "block", marginBottom: "0.5rem" }}>✨ AI Proposed Category (COA)</label>
                     <input 
@@ -415,7 +457,7 @@ export default function CustomerPortal() {
                         setShowCoaDropdown(true);
                       }}
                       onFocus={() => setShowCoaDropdown(true)}
-                      onBlur={() => setTimeout(() => setShowCoaDropdown(false), 200)} // Delay hides list so clicks register
+                      onBlur={() => setTimeout(() => setShowCoaDropdown(false), 200)}
                       className="input" 
                       placeholder="Start typing COA code or name..." 
                       autoComplete="off"
@@ -445,17 +487,16 @@ export default function CustomerPortal() {
                               {c.code} - {c.name}
                             </div>
                         ))}
-                        {coaList.filter(c => `${c.code} - ${c.name}`.toLowerCase().includes(coaSearch.toLowerCase())).length === 0 && (
-                          <div style={{ padding: "0.75rem", color: "#64748b", fontStyle: "italic" }}>No matching account codes found.</div>
-                        )}
                       </div>
                     )}
                   </div>
                 </div>
                 
                 <div style={{ display: "flex", justifyContent: "flex-end", gap: "1rem", marginTop: "2rem" }}>
-                  <button type="button" onClick={() => setSelectedDocument(null)} className="secondary-btn">Cancel</button>
-                  <button type="submit" className="success-btn">Approve & Send to Accountant</button>
+                  <button type="button" onClick={() => setSelectedDocument(null)} className="secondary-btn" disabled={isApproving}>Cancel</button>
+                  <button type="submit" className="success-btn" disabled={isApproving}>
+                    {isApproving ? "Approving..." : "Approve & Send to Accountant"}
+                  </button>
                 </div>
               </form>
             ) : (
