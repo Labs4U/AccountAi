@@ -1,117 +1,98 @@
 import { Handler } from 'aws-lambda';
+import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
+import { DynamoDBDocumentClient, ScanCommand } from '@aws-sdk/lib-dynamodb';
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 
+const ddbClient = new DynamoDBClient({});
+const dynamo = DynamoDBDocumentClient.from(ddbClient);
 const s3 = new S3Client({});
 
-const executeGraphQL = async (query: string, variables: any) => {
-  const endpoint = process.env.AMPLIFY_DATA_GRAPHQL_ENDPOINT;
-  const apiKey = process.env.AMPLIFY_DATA_GRAPHQL_API_KEY;
-
-  if (!endpoint || !apiKey) throw new Error("Missing AppSync environment variables.");
-
-  const response = await fetch(endpoint, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey },
-    body: JSON.stringify({ query, variables })
-  });
-
-  const json = await response.json();
-  if (json.errors) throw new Error(json.errors[0].message);
-  return json.data;
-};
-
 export const handler: Handler = async (event) => {
-  console.log("Compliance Report Generation Triggered", JSON.stringify(event));
+  console.log("Direct-DB POC Report Generation Triggered", JSON.stringify(event));
 
-  const bucketName = process.env.BUCKET_NAME;
-  if (!bucketName) throw new Error("Missing BUCKET_NAME environment variable.");
-
-  // Timetable Calculation (For Production)
-  const now = new Date();
-  now.setMonth(now.getMonth() - 1);
-  const targetYearMonth = now.toISOString().slice(0, 7); // "YYYY-MM"
-  const targetYear = targetYearMonth.split('-')[0];
-  const quarter = Math.ceil(parseInt(targetYearMonth.split('-')[1], 10) / 3);
+  // 🟢 Explicitly using your table name
+  const tableName = "DocumentRecord-ernvgsc7uzfipmoevatlefca7i-NONE";
+  const bucketName = process.env.BUCKET_NAME || 'account-ai-bh';
 
   try {
-    // 1. Fetch all Company Profiles to organize reports by client
-    const profileQuery = `
-      query ListProfiles {
-        listDocumentRecord(filter: { documentId: { eq: "CONFIG" } }) {
-          items { userId, companyName }
-        }
-      }
-    `;
-    const profileData = await executeGraphQL(profileQuery, {});
-    const companies = profileData?.listDocumentRecord?.items || [];
+    console.log(`Scanning DynamoDB Table: ${tableName}`);
 
-    if (companies.length === 0) return { success: true, message: "No companies configured." };
+    // Direct scan of your exact table
+    const scanResult = await dynamo.send(
+      new ScanCommand({ TableName: tableName })
+    );
+
+    const allItems = scanResult.Items || [];
+    console.log(`Total items retrieved from table: ${allItems.length}`);
+    
+    // Log statuses to verify records in CloudWatch
+    allItems.forEach(item => {
+      if (item.documentId !== "CONFIG") {
+        console.log(`Doc ID: ${item.documentId}, Status Found: '${item.status}'`);
+      }
+    });
+
+    // Extract Company Name mapping from CONFIG records
+    const companyMap: Record<string, string> = {};
+    allItems
+      .filter(r => r.documentId === "CONFIG")
+      .forEach(r => {
+        if (r.userId && r.companyName) {
+          companyMap[r.userId] = r.companyName;
+        }
+      });
+
+    // Flexible match for Finalized documents (case-insensitive)
+    const finalizedDocs = allItems.filter(r => {
+      const statusStr = (r.status || "").trim().toUpperCase();
+      return statusStr === "FINALIZED" && r.documentId !== "CONFIG";
+    });
+
+    console.log(`Matched ${finalizedDocs.length} finalized documents.`);
+
+    if (finalizedDocs.length === 0) {
+      return { 
+        success: true, 
+        message: `Scanned table successfully, but found 0 finalized documents out of ${allItems.length} total rows.` 
+      };
+    }
+
+    // Group finalized documents by userId
+    const docsByUser: Record<string, any[]> = {};
+    finalizedDocs.forEach(doc => {
+      if (!docsByUser[doc.userId]) docsByUser[doc.userId] = [];
+      docsByUser[doc.userId].push(doc);
+    });
 
     let reportsGenerated = 0;
+    const currentYear = new Date().getFullYear().toString();
 
-    // 2. Process reports per company
-    for (const company of companies) {
-      const userId = company.userId;
-      const sanitizedCompany = (company.companyName || "UnknownCompany").replace(/[^a-zA-Z0-9_-]/g, "_");
+    // Generate and upload reports per company
+    for (const [userId, docs] of Object.entries(docsByUser)) {
+      const companyName = companyMap[userId] || docs[0].companyName || "UnknownCompany";
+      const sanitizedCompany = companyName.replace(/[^a-zA-Z0-9_-]/g, "_");
 
-      // Fetch all FINALIZED documents for this user
-      const docsQuery = `
-        query ListUserFinalized($userId: String!) {
-          listDocumentRecord(filter: { userId: { eq: "$userId" }, status: { eq: "FINALIZED" } }) {
-            items {
-              documentId
-              extractedVendor
-              extractedTotal
-              extractedTax
-              extractedDate
-              vendorTRN
-              mappedAccountCode
-              mappedAccountName
-              status
-              createdAt
-            }
-          }
-        }
-      `.replace("$userId", userId);
-
-      const docsData = await executeGraphQL(docsQuery, {});
-      const allUserDocs = docsData?.listDocumentRecord?.items || [];
-
-      // ====================================================================
-      // ⚠️ POC OVERRIDE: 
-      // In production, this should be: allUserDocs.filter(d => d.createdAt.startsWith(targetYearMonth))
-      // For the POC, we are forcefully grabbing ALL finalized documents.
-      // ====================================================================
-      const docsToProcess = allUserDocs; 
-      
-      if (docsToProcess.length === 0) {
-        console.log(`No finalized documents for ${sanitizedCompany}. Skipping.`);
-        continue;
-      }
-
-      // --- REPORT 1: Management Accounts (Business Health / Monthly) ---
+      // --- REPORT 1: Management Accounts ---
       let mgmtCsv = "DocumentID,Vendor,Date,Total_Expense,COA_Category\n";
-      docsToProcess.forEach(r => {
+      docs.forEach(r => {
         mgmtCsv += `"${r.documentId}","${r.extractedVendor || ''}","${r.extractedDate || ''}",${r.extractedTotal || 0},"${r.mappedAccountName || ''}"\n`;
       });
 
-      // --- REPORT 2: The VAT Return (NBR Compliance / Quarterly or Monthly) ---
-      // Focused strictly on recoverable tax and TRNs
+      // --- REPORT 2: VAT Return ---
       let vatCsv = "DocumentID,Vendor,VendorTRN,Date,TotalGross,TaxRecoverable\n";
-      docsToProcess.forEach(r => {
+      docs.forEach(r => {
         vatCsv += `"${r.documentId}","${r.extractedVendor || ''}","${r.vendorTRN || 'NOT_FOUND'}","${r.extractedDate || ''}",${r.extractedTotal || 0},${r.extractedTax || 0}\n`;
       });
 
-      // --- REPORT 3: Audited Financial Statements (MOIC Compliance / Annual) ---
-      // A comprehensive master ledger mapping every transaction to its specific COA code for IFRS auditing
+      // --- REPORT 3: Audited Financial Statements ---
       let moicCsv = "DocumentID,TransactionDate,Vendor,TotalAmount,TaxAmount,NetAmount,COA_Code,COA_Name,AuditStatus\n";
-      docsToProcess.forEach(r => {
+      docs.forEach(r => {
         const net = (r.extractedTotal || 0) - (r.extractedTax || 0);
         moicCsv += `"${r.documentId}","${r.extractedDate || ''}","${r.extractedVendor || ''}",${r.extractedTotal || 0},${r.extractedTax || 0},${net},"${r.mappedAccountCode || ''}","${r.mappedAccountName || ''}","${r.status}"\n`;
       });
 
-      // 3. Upload to Structured S3 Paths
-      const basePrefix = `reports/${userId}_${sanitizedCompany}/${targetYear}`;
+      // Upload to Structured S3 Paths
+      const basePrefix = `reports/${userId}_${sanitizedCompany}/${currentYear}`;
 
       await s3.send(new PutObjectCommand({
         Bucket: bucketName, Key: `${basePrefix}/management/Management_Accounts_POC.csv`, Body: mgmtCsv, ContentType: 'text/csv'
@@ -126,12 +107,17 @@ export const handler: Handler = async (event) => {
       }));
 
       reportsGenerated++;
+      console.log(`Successfully compiled reports for ${companyName}`);
     }
 
-    return { success: true, message: "POC Reports Generated Successfully!", companiesProcessed: reportsGenerated };
+    return { 
+      success: true, 
+      message: `Successfully generated POC reports for ${reportsGenerated} company/companies!`, 
+      finalizedCount: finalizedDocs.length 
+    };
 
-  } catch (error) {
-    console.error("Failed to generate compliance reports:", error);
-    throw error;
+  } catch (error: any) {
+    console.error("Failed to generate POC compliance reports:", error);
+    return { success: false, error: error.message || String(error) };
   }
 };

@@ -1,13 +1,57 @@
-import { useEffect, useState, useRef} from "react";
+import { useEffect, useState, useRef, useMemo } from "react";
 import type { Schema } from "../../amplify/data/resource";
 import { generateClient } from "aws-amplify/data";
 import { fetchAuthSession } from "aws-amplify/auth";
-import { uploadData, getUrl } from "aws-amplify/storage";
+import { uploadData, getUrl, list } from "aws-amplify/storage";
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 
 const client = generateClient<Schema>();
 
+// 🟢 BUILT-IN FALLBACK LIST
+const FALLBACK_COA_LIST = [
+  { code: "1000", name: "ASSETS" }, { code: "1100", name: "Cash on Hand" }, { code: "1110", name: "Petty Cash" },
+  { code: "1120", name: "Bank Account" }, { code: "1130", name: "Short-term Deposits" }, { code: "1200", name: "Accounts Receivable" },
+  { code: "1210", name: "Allowance for Doubtful Accounts" }, { code: "1300", name: "Inventory" }, { code: "1310", name: "Raw Materials" },
+  { code: "1320", name: "Work in Progress" }, { code: "1330", name: "Finished Goods" }, { code: "1400", name: "Prepaid Expenses" },
+  { code: "1410", name: "Prepaid Insurance" }, { code: "1420", name: "Prepaid Rent" }, { code: "1500", name: "Fixed Assets" },
+  { code: "1510", name: "Land" }, { code: "1520", name: "Buildings" }, { code: "1530", name: "Machinery & Equipment" },
+  { code: "1540", name: "Office Equipment" }, { code: "1550", name: "Computers" }, { code: "1560", name: "Vehicles" },
+  { code: "1590", name: "Accumulated Depreciation" }, { code: "2000", name: "LIABILITIES" }, { code: "2100", name: "Accounts Payable" },
+  { code: "2110", name: "Trade Creditors" }, { code: "2200", name: "Accrued Expenses" }, { code: "2210", name: "Salaries Payable" },
+  { code: "2220", name: "Utilities Payable" }, { code: "2230", name: "Taxes Payable" }, { code: "2300", name: "VAT/Sales Tax Payable" },
+  { code: "2400", name: "Bank Loan - Short Term" }, { code: "2500", name: "Bank Loan - Long Term" }, { code: "2600", name: "Customer Deposits" },
+  { code: "3000", name: "EQUITY" }, { code: "3100", name: "Owner's Capital" }, { code: "3200", name: "Additional Capital" },
+  { code: "3300", name: "Retained Earnings" }, { code: "3400", name: "Current Year Earnings" }, { code: "3500", name: "Owner's Drawings" },
+  { code: "4000", name: "REVENUE" }, { code: "4100", name: "Sales Revenue" }, { code: "4110", name: "Service Revenue" },
+  { code: "4200", name: "Other Operating Income" }, { code: "4300", name: "Interest Income" }, { code: "4400", name: "Other Income" },
+  { code: "5000", name: "COST OF SALES" }, { code: "5100", name: "Cost of Goods Sold" }, { code: "5110", name: "Purchases" },
+  { code: "5120", name: "Freight In" }, { code: "5130", name: "Purchase Returns" }, { code: "5140", name: "Inventory Adjustments" },
+  { code: "6000", name: "OPERATING EXPENSES" }, { code: "6100", name: "Salaries and Wages" }, { code: "6110", name: "Employee Benefits" },
+  { code: "6200", name: "Rent Expense" }, { code: "6210", name: "Utilities Expense" }, { code: "6220", name: "Telephone & Internet" },
+  { code: "6230", name: "Office Supplies" }, { code: "6240", name: "Repairs & Maintenance" }, { code: "6250", name: "Vehicle Expenses" },
+  { code: "6260", name: "Fuel Expense" }, { code: "6270", name: "Insurance Expense" }, { code: "6280", name: "Depreciation Expense" },
+  { code: "6290", name: "Travel & Entertainment" }, { code: "6300", name: "Marketing & Advertising" }, { code: "6310", name: "Professional Fees" },
+  { code: "6320", name: "Bank Charges" }, { code: "6330", name: "Software Subscriptions" }, { code: "6340", name: "Training Expense" },
+  { code: "6350", name: "Miscellaneous Expenses" }, { code: "7000", name: "FINANCE & TAX EXPENSES" }, { code: "7100", name: "Interest Expense" },
+  { code: "7200", name: "Income Tax Expense" }, { code: "7300", name: "Foreign Exchange Gain/Loss" }
+];
+
+const parseCOA = (rawStr: any): {code: string, name: string}[] => {
+  if (!rawStr) return [];
+  let parsed = rawStr;
+  if (typeof parsed === 'string') {
+    try { parsed = JSON.parse(parsed); } catch (e) { return []; }
+  }
+  if (typeof parsed === 'string') {
+    try { parsed = JSON.parse(parsed); } catch (e) { return []; }
+  }
+  return Array.isArray(parsed) ? parsed : [];
+};
+
+const CHART_COLORS = ["#4F73EE", "#D77B9A", "#00A480", "#A881F3", "#E07715", "#80A2FF", "#E11D48", "#2563EB", "#059669", "#D97706"];
+
 export default function CustomerPortal() {
-  const [activeTab, setActiveTab] = useState<"upload" | "library" | "setup">("library");
+  const [activeTab, setActiveTab] = useState<"upload" | "library" | "setup" | "analytics">("library");
   const [documents, setDocuments] = useState<Array<Schema["DocumentRecord"]["type"]>>([]);
   const [isUploading, setIsUploading] = useState(false);
   
@@ -23,16 +67,37 @@ export default function CustomerPortal() {
   
   // --- COA STATE & MODALS ---
   const [coaList, setCoaList] = useState<{ code: string; name: string }[]>([]);
+  const [systemCoaList, setSystemCoaList] = useState<{ code: string; name: string }[]>([]); 
   const [isCoaModalOpen, setIsCoaModalOpen] = useState(false);
+  const [focusedCoaIndex, setFocusedCoaIndex] = useState<number | null>(null);
   const [selectedDocument, setSelectedDocument] = useState<Schema["DocumentRecord"]["type"] | null>(null);
 
-  // --- NEW: CUSTOM DROPDOWN STATE ---
+  // --- DROPDOWN STATE ---
   const [coaSearch, setCoaSearch] = useState("");
   const [showCoaDropdown, setShowCoaDropdown] = useState(false);
   const [editForm, setEditForm] = useState({ vendorName: "", date: "", total: "", tax: "" });
   const [isApproving, setIsApproving] = useState(false);
 
+  // --- REPORTS STATE ---
+  const [reportFiles, setReportFiles] = useState<any[]>([]);
+  const [isLoadingReports, setIsLoadingReports] = useState(false);
+
   useEffect(() => {
+    const fetchSystemCOA = async () => {
+      try {
+        const { data } = await client.models.DocumentRecord.get(
+          { userId: "SYSTEM", documentId: "DEFAULT_COA" },
+          { authMode: "apiKey" } 
+        );
+        if (data?.chartOfAccounts) {
+          setSystemCoaList(parseCOA(data.chartOfAccounts));
+        }
+      } catch (err) {
+        console.error("Failed to fetch System COA, relying on local fallback.", err);
+      }
+    };
+    fetchSystemCOA();
+
     fetchAuthSession().then(session => {
       const sub = session.tokens?.idToken?.payload.sub?.toString();
       if (sub) {
@@ -53,59 +118,85 @@ export default function CustomerPortal() {
               setCompanyType(config.companyType || "WLL");
               setCompanyAddress(config.companyAddress || "");
               setCompanyTrn(config.companyTrn || "");
-              
-              try {
-                if (typeof config.chartOfAccounts === "string") {
-                  setCoaList(JSON.parse(config.chartOfAccounts));
-                } else if (Array.isArray(config.chartOfAccounts)) {
-                  setCoaList(config.chartOfAccounts);
-                }
-              } catch (err) {
-                console.error("Failed to parse COA array from DynamoDB", err);
-              }
+              setCoaList(parseCOA(config.chartOfAccounts));
             }
-          }
+          },
+          error: (err) => console.warn("AppSync Subscription error:", err)
         });
         return () => subscription.unsubscribe();
       }
     });
   }, []);
 
+  const { chartData, chartCategories } = useMemo(() => {
+    const finalizedDocs = documents.filter(d => d.status === "FINALIZED");
+    const dataMap: Record<string, any> = {};
+    const categories = new Set<string>();
+
+    finalizedDocs.forEach(doc => {
+      let parsedDate = new Date(doc.extractedDate || "");
+      if (isNaN(parsedDate.getTime())) {
+        const parts = (doc.extractedDate || "").split('-');
+        if (parts.length >= 3) {
+           parsedDate = new Date(`${parts[1]} 1, ${parts[2]}`);
+        }
+      }
+      
+      const monthStr = isNaN(parsedDate.getTime()) 
+        ? "Unknown Date" 
+        : parsedDate.toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
+
+      const category = doc.mappedAccountName || "Uncategorized";
+      const total = doc.extractedTotal || 0;
+
+      categories.add(category);
+
+      if (!dataMap[monthStr]) dataMap[monthStr] = { month: monthStr };
+      dataMap[monthStr][category] = (dataMap[monthStr][category] || 0) + total;
+    });
+
+    const sortedData = Object.values(dataMap).sort((a: any, b: any) => {
+      return new Date(a.month).getTime() - new Date(b.month).getTime();
+    });
+
+    return { chartData: sortedData, chartCategories: Array.from(categories) };
+  }, [documents]);
+
+  const fetchReports = async () => {
+    if (!userSub || !companyName) return;
+    setIsLoadingReports(true);
+    try {
+      const sanitizedCompany = companyName.replace(/[^a-zA-Z0-9_-]/g, "_");
+      const prefix = `reports/${userSub}_${sanitizedCompany}/`;
+      const result = await list({ path: prefix });
+      setReportFiles(result.items.filter(i => i.size && i.size > 0));
+    } catch (err) {
+      console.error("Failed to fetch reports:", err);
+    } finally {
+      setIsLoadingReports(false);
+    }
+  };
+
+  useEffect(() => {
+    if (activeTab === "analytics") {
+      fetchReports();
+    }
+  }, [activeTab, userSub, companyName]);
+
+
   const handleSaveProfile = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!userSub) return;
-
     try {
-      let response;
-      // 1. MUST stringify the array for the AWSJSON schema type
       const formattedCoa = JSON.stringify(coaList); 
-
       if (configRecordId) {
-        response = await client.models.DocumentRecord.update({
-          userId: userSub,
-          documentId: "CONFIG",
-          companyName,
-          companyType,
-          companyAddress,
-          companyTrn,
-          chartOfAccounts: formattedCoa // 2. Pass the stringified version
+        await client.models.DocumentRecord.update({
+          userId: userSub, documentId: "CONFIG", companyName, companyType, companyAddress, companyTrn, chartOfAccounts: formattedCoa 
         });
       } else {
-        response = await client.models.DocumentRecord.create({
-          userId: userSub,
-          documentId: "CONFIG",
-          recordType: "PROFILE",
-          companyName,
-          companyType,
-          companyAddress,
-          companyTrn,
-          chartOfAccounts: formattedCoa // 3. Pass the stringified version
+        await client.models.DocumentRecord.create({
+          userId: userSub, documentId: "CONFIG", recordType: "PROFILE", companyName, companyType, companyAddress, companyTrn, chartOfAccounts: formattedCoa 
         });
-      }
-
-      if (response.errors) {
-        alert(`Save failed: ${response.errors[0].message}`);
-        return;
       }
       alert("Company Setup Saved!");
     } catch (err: any) {
@@ -115,130 +206,174 @@ export default function CustomerPortal() {
 
   const addCoa = () => setCoaList([...coaList, { code: "", name: "" }]);
   const updateCoa = (index: number, field: "code" | "name", value: string) => {
-    const updated = [...coaList];
-    updated[index][field] = value;
-    setCoaList(updated);
+    const updated = [...coaList]; updated[index][field] = value; setCoaList(updated);
   };
   const removeCoa = (index: number) => setCoaList(coaList.filter((_, i) => i !== index));
 
   const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file || !userSub) return;
-    
-    setIsUploading(true);
-    setUploadProgress(0); 
-
+    setIsUploading(true); setUploadProgress(0); 
     try {
       const documentId = `doc-${Date.now()}`;
       const ext = (file.name.split(".").pop() || "jpg").toLowerCase();
-      
-      // 1. Upload strictly to the neutral staging area (Inbox)
       const rawPath = `${userSub}/raw/${documentId}.${ext}`;
 
       await uploadData({ 
-        path: rawPath, 
-        data: file,
+        path: rawPath, data: file,
         options: {
           onProgress: ({ transferredBytes, totalBytes }) => {
-            if (totalBytes && isMounted.current) {
-              setUploadProgress(Math.round((transferredBytes / totalBytes) * 100));
-            }
+            if (totalBytes && isMounted.current) setUploadProgress(Math.round((transferredBytes / totalBytes) * 100));
           }
         }
       }).result;
 
-      // 2. Create the record. We don't know the final URI yet because the AI hasn't moved it!
       const newDocRecord = {
-        userId: userSub,
-        documentId: documentId,
-        recordType: "DOCUMENT",
-        status: "PROCESSING", 
-        s3RawUri: `s3://account-ai-bh/${rawPath}`
-        // Notice we leave s3FinalUri out. The backend Lambda will update this later!
+        userId: userSub, documentId: documentId, recordType: "DOCUMENT",
+        status: "PROCESSING", s3RawUri: `s3://account-ai-bh/${rawPath}`
       } as Schema["DocumentRecord"]["type"];
 
       if (isMounted.current) {
         setDocuments(prev => [newDocRecord, ...prev]);
-        setIsUploading(false);
-        setUploadProgress(0);
-        setActiveTab("library"); 
+        setIsUploading(false); setUploadProgress(0); setActiveTab("library"); 
       }
-
       await client.models.DocumentRecord.create(newDocRecord);
-      
     } catch (err) {
       console.error("Upload failed:", err);
       if (isMounted.current) setIsUploading(false);
     }
   };
 
-  const handleValidateExtraction = async (doc: Schema["DocumentRecord"]["type"], formData: any) => {
-    try {
-      const [newCoaCode, newCoaName] = coaSearch.split(" - ");
-      const newStatus = (doc.aiConfidenceScore ?? 100) < 90 || !doc.isMathValid 
-        ? "CUSTOMER_APPROVED_FLAGGED" : "CUSTOMER_APPROVED_CLEAN";
-
-      await client.models.DocumentRecord.update({
-        userId: doc.userId,
-        documentId: doc.documentId,
-        status: newStatus, 
-        extractedVendor: formData.vendorName,
-        extractedTotal: formData.total ? parseFloat(formData.total) : null,
-        extractedTax: formData.tax ? parseFloat(formData.tax) : null,
-        extractedDate: formData.date || null,
-        mappedAccountCode: newCoaCode || doc.mappedAccountCode,
-        mappedAccountName: newCoaName || doc.mappedAccountName,
-        accountantNote: null // <-- CLEAR NOTE SO IT DOES NOT PERSIST AFTER RESOLUTION
-      });
-      
-      setSelectedDocument(null);
-    } catch (err) {
-      alert("Failed to save changes.");
-    }
-  };
-
   const handleViewDocument = async (doc: Schema["DocumentRecord"]["type"]) => {
-    // 1. Prefer the final URI (invoice/receipt folder), fallback to raw if not processed yet
     const uri = doc.s3FinalUri || doc.s3RawUri;
-    
-    if (!uri) {
-      alert("Document URL not found.");
-      return;
-    }
-    
+    if (!uri) return alert("Document URL not found.");
     try {
-      // 2. Strip the bucket name
       let path = uri.replace("s3://account-ai-bh/", "");
-      
-      // 3. (Optional Hack) To make your EXISTING document work without re-uploading:
-      if (path.includes("/raw/") && doc.status !== "PROCESSING") {
-        path = path.replace("/raw/", "/invoice/");
-      }
-
-      // 4. Get the presigned URL and open it
+      if (path.includes("/raw/") && doc.status !== "PROCESSING") path = path.replace("/raw/", "/invoice/");
       const linkToStorageFile = await getUrl({ path });
       window.open(linkToStorageFile.url.toString(), "_blank");
     } catch (err) {
-      console.error(err);
       alert("Failed to fetch document link.");
     }
   };
 
   const pendingCount = documents.filter(d => d.status === "PENDING_CUSTOMER").length;
+  const safeCoaList = Array.isArray(coaList) ? coaList : [];
+  const safeSystemList = Array.isArray(systemCoaList) && systemCoaList.length > 0 ? systemCoaList : FALLBACK_COA_LIST;
+  const activeCoaDropdownList = safeCoaList.length > 0 ? safeCoaList : safeSystemList;
+
+  const renderLegend = (props: any) => {
+    const { payload } = props;
+    return (
+      <ul style={{ listStyle: 'none', padding: 0, display: 'flex', flexWrap: 'wrap', gap: '15px', fontSize: '0.85rem', color: '#d1d5db', marginTop: '20px' }}>
+        {payload.map((entry: any, index: number) => (
+          <li key={`item-${index}`} style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <span style={{ width: '12px', height: '12px', backgroundColor: entry.color, borderRadius: '2px', display: 'inline-block' }}></span>
+            {entry.value}
+          </li>
+        ))}
+      </ul>
+    );
+  };
 
   return (
-    <main className="content">
+    <main className="content" style={{ display: "flex", flexDirection: "column", height: "100%", overflowY: "auto" }}>
       <nav className="nav-tabs">
-        <button className={activeTab === "upload" ? "active-tab-btn" : "tab-btn"} onClick={() => setActiveTab("upload")}>
-          📤 Upload
-        </button>
+        <button className={activeTab === "upload" ? "active-tab-btn" : "tab-btn"} onClick={() => setActiveTab("upload")}>📤 Upload</button>
         <button className={activeTab === "library" ? "active-tab-btn" : "tab-btn"} onClick={() => setActiveTab("library")}>
           📁 Library {pendingCount > 0 && <span style={{ color: "red", fontWeight: "bold" }}>({pendingCount} Action Required)</span>}
         </button>
-        <button className={activeTab === "setup" ? "active-tab-btn" : "tab-btn"} onClick={() => setActiveTab("setup")}>
-          ⚙️ Setup
-        </button>
+        <button className={activeTab === "analytics" ? "active-tab-btn" : "tab-btn"} onClick={() => setActiveTab("analytics")}>📊 Analytics</button>
+        <button className={activeTab === "setup" ? "active-tab-btn" : "tab-btn"} onClick={() => setActiveTab("setup")}>⚙️ Setup</button>
       </nav>
+
+      {/* --- ANALYTICS TAB --- */}
+      {activeTab === "analytics" && (
+        <div style={{ marginTop: "2rem", paddingBottom: "2rem" }}>
+          <h2>Financial Analytics</h2>
+          <p style={{ color: "#64748b", marginBottom: "2rem" }}>
+            Live aggregated data from your finalized, accountant-approved transactions.
+          </p>
+
+          <div style={{ display: "flex", gap: "2rem", flexWrap: "wrap", alignItems: "flex-start" }}>
+            
+            {/* 🟢 LEFT COMPONENT: The Chart */}
+            <div style={{ flex: "1 1 600px", backgroundColor: '#161b22', padding: '24px', borderRadius: '12px', color: '#e5e7eb', fontFamily: 'sans-serif', boxShadow: "0 10px 15px -3px rgba(0,0,0,0.1)" }}>
+              <div style={{ marginBottom: '24px' }}>
+                <h2 style={{ fontSize: '1.25rem', fontWeight: 'bold', margin: '0 0 16px 0', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <span style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 4px)', gap: '2px' }}>
+                    <div style={{ width: '4px', height: '4px', backgroundColor: '#9ca3af', borderRadius: '1px' }}></div>
+                    <div style={{ width: '4px', height: '4px', backgroundColor: '#9ca3af', borderRadius: '1px' }}></div>
+                    <div style={{ width: '4px', height: '4px', backgroundColor: '#9ca3af', borderRadius: '1px' }}></div>
+                    <div style={{ width: '4px', height: '4px', backgroundColor: '#9ca3af', borderRadius: '1px' }}></div>
+                  </span>
+                  Cost Breakdown by Category
+                </h2>
+              </div>
+
+              <h3 style={{ fontSize: '0.9rem', fontWeight: '600', marginBottom: '16px', color: '#f3f4f6' }}>Costs (USD)</h3>
+
+              <div style={{ width: '100%', height: 350, position: 'relative' }}>
+                {chartData.length > 0 ? (
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={chartData} margin={{ top: 0, right: 0, left: -10, bottom: 0 }} barSize={45}>
+                      <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#374151" />
+                      <XAxis dataKey="month" axisLine={{ stroke: '#4b5563' }} tickLine={false} tick={{ fill: '#9ca3af', fontSize: '0.85rem' }} dy={10} />
+                      <YAxis axisLine={false} tickLine={false} tick={{ fill: '#9ca3af', fontSize: '0.85rem' }} tickFormatter={(value) => `$${value}`} />
+                      <Tooltip cursor={{ fill: '#1f2937' }} contentStyle={{ backgroundColor: '#1f2937', border: 'none', borderRadius: '6px', color: '#f3f4f6' }} itemStyle={{ color: '#f3f4f6' }} formatter={(value: number) => `$${value.toFixed(2)}`} />
+                      <Legend content={renderLegend} />
+                      {chartCategories.map((cat, idx) => (
+                        <Bar key={cat} dataKey={cat} name={cat} stackId="a" fill={CHART_COLORS[idx % CHART_COLORS.length]} />
+                      ))}
+                    </BarChart>
+                  </ResponsiveContainer>
+                ) : (
+                  <div style={{ height: "100%", display: "flex", justifyContent: "center", alignItems: "center", color: "#64748b" }}>
+                    No finalized documents available to chart yet.
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* 🟢 RIGHT COMPONENT: Compact Download List */}
+            <div style={{ flex: "1 1 250px", backgroundColor: "#f8fafc", padding: "1.5rem", borderRadius: "12px", border: "1px solid #e2e8f0" }}>
+              <h3 style={{ margin: "0 0 1rem 0", fontSize: "1.1rem", color: "#1e293b", borderBottom: "2px solid #e2e8f0", paddingBottom: "0.5rem" }}>
+                📑 Period Reports
+              </h3>
+              
+              {isLoadingReports ? (
+                <p style={{ fontSize: "0.9rem", color: "#64748b" }}>Loading...</p>
+              ) : reportFiles.length === 0 ? (
+                <p style={{ fontSize: "0.9rem", color: "#64748b" }}>No CSV reports generated by accountant yet.</p>
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
+                  {reportFiles.map((file, idx) => {
+                    const cleanName = file.path.split('/').pop()?.replace("_POC.csv", "").replace(/_/g, " ") || "Report";
+                    return (
+                      <div key={idx} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "0.75rem", backgroundColor: "white", borderRadius: "6px", boxShadow: "0 1px 2px rgba(0,0,0,0.05)" }}>
+                        <span style={{ fontSize: "0.85rem", fontWeight: "600", color: "#334155" }}>
+                          {cleanName}
+                        </span>
+                        <button 
+                          title="Download CSV"
+                          onClick={async () => {
+                            const link = await getUrl({ path: file.path });
+                            window.open(link.url.toString(), "_blank");
+                          }}
+                          style={{ background: "none", border: "none", fontSize: "1.25rem", cursor: "pointer", padding: "0" }}
+                        >
+                          📥
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+            
+          </div>
+        </div>
+      )}
 
       {/* --- SETUP TAB --- */}
       {activeTab === "setup" && (
@@ -262,11 +397,13 @@ export default function CustomerPortal() {
             <div style={{ background: "#f8f9fa", padding: "1.5rem", borderRadius: "8px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
               <div>
                 <h3 style={{ margin: 0 }}>Chart of Accounts</h3>
-                <p style={{ margin: 0, color: "#666" }}>You have {coaList.length} custom account codes configured.</p>
+                <p style={{ margin: 0, color: "#666" }}>
+                  {safeCoaList.length > 0 
+                    ? `You have ${safeCoaList.length} custom account codes configured.` 
+                    : `Using Global System Default (${safeSystemList.length} codes). Click to override.`}
+                </p>
               </div>
-              <button type="button" onClick={() => setIsCoaModalOpen(true)} className="secondary-btn">
-                Manage Chart of Accounts
-              </button>
+              <button type="button" onClick={() => setIsCoaModalOpen(true)} className="secondary-btn">Manage Chart of Accounts</button>
             </div>
             
             <button type="submit" className="success-btn" style={{ marginTop: "2rem" }}>Save Configuration</button>
@@ -276,36 +413,20 @@ export default function CustomerPortal() {
 
       {/* --- UPLOAD TAB --- */}
       {activeTab === "upload" && (
-  <div className="upload-box" style={{ marginTop: "2rem", textAlign: "center", padding: "3rem", background: "white", borderRadius: "12px", boxShadow: "0 2px 4px rgba(0,0,0,0.05)" }}>
-    <h2>Upload Financial Document</h2>
-    <p style={{ color: "#64748b", marginBottom: "1.5rem" }}>Upload invoices or receipts for automated AI extraction.</p>
-    
-    <input 
-      type="file" 
-      accept="application/pdf,image/*" 
-      onChange={handleFileUpload} 
-      disabled={isUploading} 
-      style={{ marginBottom: "1.5rem" }}
-    />
-
-    {/* 🟢 THIS READS uploadProgress AND RESOLVES THE COMPILER WARNING */}
-    {isUploading && (
-      <div style={{ width: "100%", maxWidth: "400px", margin: "0 auto" }}>
-        <p style={{ fontWeight: "bold", color: "#4f46e5", marginBottom: "0.5rem" }}>
-          Uploading to S3... {uploadProgress}%
-        </p>
-        <div style={{ width: "100%", backgroundColor: "#e2e8f0", borderRadius: "8px", overflow: "hidden", height: "12px" }}>
-          <div style={{ 
-            width: `${uploadProgress}%`, 
-            backgroundColor: "#4f46e5", 
-            height: "100%", 
-            transition: "width 0.2s ease-in-out" 
-          }} />
+        <div className="upload-box" style={{ marginTop: "2rem", textAlign: "center", padding: "3rem", background: "white", borderRadius: "12px", boxShadow: "0 2px 4px rgba(0,0,0,0.05)" }}>
+          <h2>Upload Financial Document</h2>
+          <p style={{ color: "#64748b", marginBottom: "1.5rem" }}>Upload invoices or receipts for automated AI extraction.</p>
+          <input type="file" accept="application/pdf,image/*" onChange={handleFileUpload} disabled={isUploading} style={{ marginBottom: "1.5rem" }} />
+          {isUploading && (
+            <div style={{ width: "100%", maxWidth: "400px", margin: "0 auto" }}>
+              <p style={{ fontWeight: "bold", color: "#4f46e5", marginBottom: "0.5rem" }}>Uploading to S3... {uploadProgress}%</p>
+              <div style={{ width: "100%", backgroundColor: "#e2e8f0", borderRadius: "8px", overflow: "hidden", height: "12px" }}>
+                <div style={{ width: `${uploadProgress}%`, backgroundColor: "#4f46e5", height: "100%", transition: "width 0.2s ease-in-out" }} />
+              </div>
+            </div>
+          )}
         </div>
-      </div>
-    )}
-  </div>
-)}
+      )}
 
       {/* --- LIBRARY TAB --- */}
       {activeTab === "library" && (
@@ -324,21 +445,12 @@ export default function CustomerPortal() {
                   onClick={() => {
                     setSelectedDocument(doc);
                     setCoaSearch(doc.mappedAccountCode ? `${doc.mappedAccountCode} - ${doc.mappedAccountName}` : "");
-                    
-                    // 🟢 NEW: Lock the initial values into React state
                     setEditForm({
-                      vendorName: doc.extractedVendor || "",
-                      date: doc.extractedDate || "",
-                      total: doc.extractedTotal?.toString() || "",
-                      tax: doc.extractedTax?.toString() || "",
+                      vendorName: doc.extractedVendor || "", date: doc.extractedDate || "",
+                      total: doc.extractedTotal?.toString() || "", tax: doc.extractedTax?.toString() || "",
                     });
                   }}
-                  
-                  style={{ 
-                    borderBottom: "1px solid #eee", 
-                    cursor: "pointer",
-                    backgroundColor: doc.status === "PENDING_CUSTOMER" ? "#fff9e6" : "inherit"
-                  }}
+                  style={{ borderBottom: "1px solid #eee", cursor: "pointer", backgroundColor: doc.status === "PENDING_CUSTOMER" ? "#fff9e6" : "inherit" }}
                   onMouseOver={(e) => e.currentTarget.style.backgroundColor = "#f0f8ff"}
                   onMouseOut={(e) => e.currentTarget.style.backgroundColor = doc.status === "PENDING_CUSTOMER" ? "#fff9e6" : "inherit"}
                 >
@@ -356,7 +468,6 @@ export default function CustomerPortal() {
       )}
 
       {/* --- DOCUMENT REVIEW MODAL --- */}
-      {/* --- DOCUMENT REVIEW MODAL --- */}
       {selectedDocument && (
         <div style={{
           position: "fixed", top: 0, left: 0, width: "100vw", height: "100vh",
@@ -369,16 +480,7 @@ export default function CustomerPortal() {
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.5rem" }}>
               <h2 style={{ margin: 0 }}>Document: {selectedDocument.documentId}</h2>
               <div style={{ display: "flex", gap: "12px", alignItems: "center" }}>
-                <button 
-                  type="button" 
-                  onClick={() => handleViewDocument(selectedDocument)} 
-                  style={{ 
-                    fontSize: "0.75rem", padding: "4px 8px", backgroundColor: "#f1f5f9", 
-                    border: "1px solid #cbd5e1", borderRadius: "4px", cursor: "pointer", color: "#334155"
-                  }}
-                >
-                  👁️ View Original
-                </button>
+                <button type="button" onClick={() => handleViewDocument(selectedDocument)} style={{ fontSize: "0.75rem", padding: "4px 8px", backgroundColor: "#f1f5f9", border: "1px solid #cbd5e1", borderRadius: "4px", cursor: "pointer", color: "#334155" }}>👁️ View Original</button>
                 <button onClick={() => setSelectedDocument(null)} style={{ background: "none", border: "none", fontSize: "1.5rem", cursor: "pointer", color: "#64748b" }}>✖</button>
               </div>
             </div>
@@ -387,39 +489,24 @@ export default function CustomerPortal() {
               <form onSubmit={async (e) => {
                 e.preventDefault();
                 if (!selectedDocument) return;
-                
                 setIsApproving(true);
                 try {
                   const [newCoaCode, newCoaName] = coaSearch.split(" - ");
-                  const newStatus = (selectedDocument.aiConfidenceScore ?? 100) < 90 || !selectedDocument.isMathValid 
-                    ? "CUSTOMER_APPROVED_FLAGGED" : "CUSTOMER_APPROVED_CLEAN";
+                  const newStatus = (selectedDocument.aiConfidenceScore ?? 100) < 90 || !selectedDocument.isMathValid ? "CUSTOMER_APPROVED_FLAGGED" : "CUSTOMER_APPROVED_CLEAN";
 
                   await client.models.DocumentRecord.update({
-                    userId: selectedDocument.userId,
-                    documentId: selectedDocument.documentId,
-                    status: newStatus, 
-                    extractedVendor: editForm.vendorName,
-                    extractedTotal: editForm.total ? parseFloat(editForm.total) : null,
-                    extractedTax: editForm.tax ? parseFloat(editForm.tax) : null,
-                    extractedDate: editForm.date || null,
-                    mappedAccountCode: newCoaCode || selectedDocument.mappedAccountCode,
-                    mappedAccountName: newCoaName || selectedDocument.mappedAccountName,
-                    accountantNote: null 
+                    userId: selectedDocument.userId, documentId: selectedDocument.documentId, status: newStatus, 
+                    extractedVendor: editForm.vendorName, extractedTotal: editForm.total ? parseFloat(editForm.total) : null,
+                    extractedTax: editForm.tax ? parseFloat(editForm.tax) : null, extractedDate: editForm.date || null,
+                    mappedAccountCode: newCoaCode || selectedDocument.mappedAccountCode, mappedAccountName: newCoaName || selectedDocument.mappedAccountName, accountantNote: null 
                   });
-                  
                   setSelectedDocument(null);
-                } catch (err) {
-                  alert("Failed to save changes.");
-                } finally {
-                  setIsApproving(false);
-                }
+                } catch (err) { alert("Failed to save changes."); } finally { setIsApproving(false); }
               }}>
                 {selectedDocument.accountantNote ? (
                   <div style={{ backgroundColor: "#fef3c7", borderLeft: "4px solid #f59e0b", padding: "1rem", borderRadius: "8px", marginBottom: "1.5rem" }}>
                     <strong style={{ color: "#92400e", fontSize: "1rem" }}>⚠️ Accountant Feedback:</strong>
-                    <p style={{ margin: "0.5rem 0 0 0", color: "#78350f", fontWeight: "600", fontSize: "0.95rem" }}>
-                      "{selectedDocument.accountantNote}"
-                    </p>
+                    <p style={{ margin: "0.5rem 0 0 0", color: "#78350f", fontWeight: "600", fontSize: "0.95rem" }}>"{selectedDocument.accountantNote}"</p>
                   </div>
                 ) : (
                   <div style={{ backgroundColor: "#e0f2fe", padding: "1rem", borderRadius: "8px", marginBottom: "1.5rem" }}>
@@ -427,59 +514,34 @@ export default function CustomerPortal() {
                   </div>
                 )}
 
-                {/* 🟢 HERE ARE THE RESTORED FORM FIELDS */}
                 <div style={{ display: "flex", gap: "1rem", flexWrap: "wrap" }}>
-                  <div className="form-group">
-                    <label>Vendor</label>
-                    <input value={editForm.vendorName} onChange={e => setEditForm({...editForm, vendorName: e.target.value})} className="input" />
-                  </div>
-                  <div className="form-group">
-                    <label>Date</label>
-                    <input value={editForm.date} onChange={e => setEditForm({...editForm, date: e.target.value})} className="input" />
-                  </div>
-                  <div className="form-group">
-                    <label>Total</label>
-                    <input type="number" step="0.01" value={editForm.total} onChange={e => setEditForm({...editForm, total: e.target.value})} className="input" />
-                  </div>
-                  <div className="form-group">
-                    <label>Tax</label>
-                    <input type="number" step="0.01" value={editForm.tax} onChange={e => setEditForm({...editForm, tax: e.target.value})} className="input" />
-                  </div>
+                  <div className="form-group"><label>Vendor</label><input value={editForm.vendorName} onChange={e => setEditForm({...editForm, vendorName: e.target.value})} className="input" /></div>
+                  <div className="form-group"><label>Date</label><input value={editForm.date} onChange={e => setEditForm({...editForm, date: e.target.value})} className="input" /></div>
+                  <div className="form-group"><label>Total</label><input type="number" step="0.01" value={editForm.total} onChange={e => setEditForm({...editForm, total: e.target.value})} className="input" /></div>
+                  <div className="form-group"><label>Tax</label><input type="number" step="0.01" value={editForm.tax} onChange={e => setEditForm({...editForm, tax: e.target.value})} className="input" /></div>
 
-                  {/* CUSTOM SEARCHABLE DROPDOWN */}
                   <div className="form-group" style={{ flexBasis: "100%", marginTop: "1rem", position: "relative" }}>
                     <label style={{ fontWeight: "bold", color: "#4f46e5", display: "block", marginBottom: "0.5rem" }}>✨ AI Proposed Category (COA)</label>
                     <input 
-                      type="text"
-                      value={coaSearch}
-                      onChange={(e) => {
-                        setCoaSearch(e.target.value);
-                        setShowCoaDropdown(true);
-                      }}
+                      type="text" value={coaSearch}
+                      onChange={(e) => { setCoaSearch(e.target.value); setShowCoaDropdown(true); }}
                       onFocus={() => setShowCoaDropdown(true)}
                       onBlur={() => setTimeout(() => setShowCoaDropdown(false), 200)}
-                      className="input" 
-                      placeholder="Start typing COA code or name..." 
-                      autoComplete="off"
+                      className="input" placeholder="Start typing COA code or name..." autoComplete="off"
                       style={{ width: "100%", boxSizing: "border-box", padding: "0.75rem", fontSize: "1rem" }}
                     />
                     
                     {showCoaDropdown && (
                       <div style={{
-                        position: "absolute", top: "100%", left: 0, right: 0,
-                        backgroundColor: "#ffffff", border: "1px solid #cbd5e1", 
-                        borderRadius: "0 0 8px 8px", zIndex: 50, maxHeight: "180px", 
-                        overflowY: "auto", boxShadow: "0 4px 6px -1px rgba(0,0,0,0.1)"
+                        position: "absolute", top: "100%", left: 0, right: 0, backgroundColor: "#ffffff", border: "1px solid #cbd5e1", 
+                        borderRadius: "0 0 8px 8px", zIndex: 50, maxHeight: "180px", overflowY: "auto", boxShadow: "0 4px 6px -1px rgba(0,0,0,0.1)"
                       }}>
-                        {coaList
+                        {activeCoaDropdownList
                           .filter(c => `${c.code} - ${c.name}`.toLowerCase().includes(coaSearch.toLowerCase()))
                           .map(c => (
                             <div 
                               key={c.code} 
-                              onClick={() => {
-                                setCoaSearch(`${c.code} - ${c.name}`);
-                                setShowCoaDropdown(false);
-                              }}
+                              onMouseDown={(e) => { e.preventDefault(); setCoaSearch(`${c.code} - ${c.name}`); setShowCoaDropdown(false); }}
                               style={{ padding: "0.75rem", cursor: "pointer", borderBottom: "1px solid #f1f5f9", color: "#000" }}
                               onMouseOver={(e) => e.currentTarget.style.backgroundColor = "#f1f5f9"}
                               onMouseOut={(e) => e.currentTarget.style.backgroundColor = "transparent"}
@@ -494,16 +556,12 @@ export default function CustomerPortal() {
                 
                 <div style={{ display: "flex", justifyContent: "flex-end", gap: "1rem", marginTop: "2rem" }}>
                   <button type="button" onClick={() => setSelectedDocument(null)} className="secondary-btn" disabled={isApproving}>Cancel</button>
-                  <button type="submit" className="success-btn" disabled={isApproving}>
-                    {isApproving ? "Approving..." : "Approve & Send to Accountant"}
-                  </button>
+                  <button type="submit" className="success-btn" disabled={isApproving}>{isApproving ? "Approving..." : "Approve & Send to Accountant"}</button>
                 </div>
               </form>
             ) : (
               <div>
-                <div style={{ display: "flex", gap: "1rem", marginBottom: "1.5rem" }}>
-                  <span className="badge">{selectedDocument.status}</span>
-                </div>
+                <div style={{ display: "flex", gap: "1rem", marginBottom: "1.5rem" }}><span className="badge">{selectedDocument.status}</span></div>
                 <table style={{ width: "100%", textAlign: "left", lineHeight: "2" }}>
                   <tbody>
                     <tr><th style={{ width: "150px" }}>Vendor:</th><td>{selectedDocument.extractedVendor || "-"}</td></tr>
@@ -536,17 +594,42 @@ export default function CustomerPortal() {
             <p style={{ color: "#666" }}>These codes are sent securely to the AI Agent during extraction.</p>
             
             <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem", marginTop: "1.5rem" }}>
-              {coaList.map((coa, i) => (
-                <div key={i} style={{ display: "flex", gap: "1rem", alignItems: "center" }}>
-                  <input placeholder="Code (e.g. 6100)" value={coa.code} onChange={e => updateCoa(i, "code", e.target.value)} className="input" style={{ width: "100px" }} />
-                  <input placeholder="Account Name (e.g. Advertising)" value={coa.name} onChange={e => updateCoa(i, "name", e.target.value)} className="input" style={{ flex: 1 }} />
-                  <button type="button" onClick={() => removeCoa(i)} style={{ color: "#dc3545", background: "none", border: "none", cursor: "pointer", fontWeight: "bold" }}>✖</button>
-                </div>
-              ))}
+              {safeCoaList.map((coa, i) => {
+                const searchStr = `${coa.code} ${coa.name}`.toLowerCase().trim();
+                const searchTerms = searchStr.split(" ").filter(t => t !== "");
+                const suggestions = safeSystemList.filter(c => {
+                  if (searchTerms.length === 0) return true;
+                  const targetStr = `${c.code} ${c.name}`.toLowerCase();
+                  return searchTerms.every(term => targetStr.includes(term));
+                });
+
+                return (
+                  <div key={i} style={{ position: "relative" }} onFocusCapture={() => setFocusedCoaIndex(i)} onBlurCapture={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setFocusedCoaIndex(null); }}>
+                    <div style={{ display: "flex", gap: "1rem", alignItems: "center", marginBottom: "0.5rem" }}>
+                      <input placeholder="Code" value={coa.code} onChange={e => updateCoa(i, "code", e.target.value)} className="input" style={{ width: "100px" }} autoComplete="off" />
+                      <input placeholder="Account Name" value={coa.name} onChange={e => updateCoa(i, "name", e.target.value)} className="input" style={{ flex: 1 }} autoComplete="off" />
+                      <button type="button" onClick={() => removeCoa(i)} style={{ color: "#dc3545", background: "none", border: "none", cursor: "pointer", fontWeight: "bold" }}>✖</button>
+                    </div>
+
+                    {focusedCoaIndex === i && (
+                      <div style={{ position: "absolute", top: "100%", left: 0, right: "32px", backgroundColor: "#ffffff", border: "1px solid #cbd5e1", borderRadius: "0 0 8px 8px", zIndex: 1050, maxHeight: "180px", overflowY: "auto", boxShadow: "0 4px 6px -1px rgba(0,0,0,0.2)" }}>
+                        {suggestions.length > 0 ? (
+                          suggestions.map(c => (
+                            <div key={c.code} onMouseDown={(e) => { e.preventDefault(); updateCoa(i, "code", c.code); updateCoa(i, "name", c.name); setFocusedCoaIndex(null); }} style={{ padding: "0.75rem", cursor: "pointer", borderBottom: "1px solid #f1f5f9", color: "#334155", fontSize: "0.95rem" }} onMouseOver={(e) => e.currentTarget.style.backgroundColor = "#e0e7ff"} onMouseOut={(e) => e.currentTarget.style.backgroundColor = "transparent"}>
+                              <strong>{c.code}</strong> - {c.name}
+                            </div>
+                          ))
+                        ) : (
+                          <div style={{ padding: "0.75rem", color: "#94a3b8", fontSize: "0.9rem", fontStyle: "italic", textAlign: "center" }}>No matching accounts found.</div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
 
             <button type="button" onClick={addCoa} className="secondary-btn" style={{ marginTop: "1rem", width: "100%" }}>+ Add New Account Code</button>
-            
             <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "2rem" }}>
               <button type="button" onClick={() => setIsCoaModalOpen(false)} className="success-btn">Done</button>
             </div>

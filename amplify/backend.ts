@@ -136,15 +136,15 @@ backend.extractExpense.resources.lambda.addToRolePolicy(
 // =======================================================================
 const documentTable = backend.data.resources.tables["DocumentRecord"];
 documentTable.grantReadWriteData(backend.extractExpense.resources.lambda);
-// ADD THIS LINE INSTEAD
+
 const extractExpenseLambda = backend.extractExpense.resources.lambda as lambda.Function;
 
-
-backend.extractExpense.addEnvironment("AMPLIFY_DATA_GRAPHQL_ENDPOINT", backend.data.resources.cfnResources.cfnGraphqlApi.attrGraphQlUrl);
-backend.extractExpense.addEnvironment(
+extractExpenseLambda.addEnvironment("AMPLIFY_DATA_GRAPHQL_ENDPOINT", backend.data.resources.cfnResources.cfnGraphqlApi.attrGraphQlUrl);
+extractExpenseLambda.addEnvironment(
   "AMPLIFY_DATA_GRAPHQL_API_KEY", 
   backend.data.resources.cfnResources.cfnApiKey!.attrApiKey
 );
+
 // =======================================================================
 // 5. DYNAMODB STREAM & SES EMAIL NOTIFICATION CONFIGURATION
 // =======================================================================
@@ -180,15 +180,19 @@ notifyCustomerFunction.addEventSource(new DynamoEventSource(documentTable, {
   startingPosition: lambda.StartingPosition.LATEST,
   retryAttempts: 3, 
 }));
+
 // 6. GRANT LAMBDA PERMISSION TO MUTATE APPSYNC (Triggers Real-time Subscriptions)
 backend.data.resources.graphqlApi.grantMutation(backend.extractExpense.resources.lambda);
+
 // =======================================================================
 // 6. MONTHLY COMPLIANCE REPORT GENERATOR (MOIC & NBR)
 // =======================================================================
 const reportsLambda = backend.generateReports.resources.lambda as lambda.Function;
 
 existingBucket.grantReadWrite(reportsLambda);
+documentTable.grantReadData(reportsLambda); // Reusing documentTable safely
 
+reportsLambda.addEnvironment('DYNAMODB_TABLE_NAME', documentTable.tableName);
 reportsLambda.addEnvironment('AMPLIFY_DATA_GRAPHQL_ENDPOINT', backend.data.resources.cfnResources.cfnGraphqlApi.attrGraphQlUrl);
 reportsLambda.addEnvironment('AMPLIFY_DATA_GRAPHQL_API_KEY', backend.data.resources.cfnResources.cfnApiKey!.attrApiKey);
 reportsLambda.addEnvironment('BUCKET_NAME', existingBucket.bucketName);

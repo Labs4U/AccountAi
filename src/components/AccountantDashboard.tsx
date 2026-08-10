@@ -77,7 +77,7 @@ export default function AccountantDashboard() {
     }
   };
 
-  // 📂 S3 REPORT FETCHING (Supports Specific Company OR Global)
+  // 📂 S3 REPORT FETCHING
   const handleOpenReports = async (userId: string | null, companyName: string) => {
     setActiveCompanyReports({ userId: userId || 'GLOBAL', name: companyName });
     setShowReportsModal(true);
@@ -108,6 +108,55 @@ export default function AccountantDashboard() {
     }
   };
 
+  const handleReturnToCustomer = async (doc: Schema["DocumentRecord"]["type"]) => {
+    if (!rejectionNote.trim()) {
+      alert("Please enter a reason for returning the document.");
+      return;
+    }
+    try {
+      await client.models.DocumentRecord.update({
+        userId: doc.userId,
+        documentId: doc.documentId,
+        status: "PENDING_CUSTOMER",
+        accountantNote: rejectionNote
+      });
+      setSelectedDocument(null);
+      setRejectionNote("");
+      setIsRejecting(false);
+    } catch (err) {
+      alert("Failed to return document.");
+    }
+  };
+
+  const handleApproveAndFinalize = async (doc: Schema["DocumentRecord"]["type"]) => {
+    try {
+      await client.models.DocumentRecord.update({
+        userId: doc.userId,
+        documentId: doc.documentId,
+        status: "FINALIZED"
+      });
+      setSelectedDocument(null);
+      alert("Document Finalized and locked to Ledger!");
+    } catch (err) {
+      alert("Failed to finalize document.");
+    }
+  };
+
+  const handleViewDocument = async (doc: Schema["DocumentRecord"]["type"]) => {
+    const uri = doc.s3FinalUri || doc.s3RawUri;
+    if (!uri) return alert("Document URL not found.");
+    try {
+      let path = uri.replace("s3://account-ai-bh/", "");
+      if (path.includes("/raw/") && doc.status !== "PROCESSING") {
+        path = path.replace("/raw/", "/invoice/");
+      }
+      const linkToStorageFile = await getUrl({ path });
+      window.open(linkToStorageFile.url.toString(), "_blank");
+    } catch (err) {
+      alert("Failed to fetch document link.");
+    }
+  };
+
   // 🔄 SORTING LOGIC
   const handleSort = (key: string) => {
     let direction: 'ascending' | 'descending' = 'ascending';
@@ -130,7 +179,6 @@ export default function AccountantDashboard() {
         let aValue: any = a[sortConfig.key as keyof typeof a];
         let bValue: any = b[sortConfig.key as keyof typeof b];
 
-        // Map custom keys for sorting
         if (sortConfig.key === 'Company') {
           aValue = companyMap[a.userId] || "";
           bValue = companyMap[b.userId] || "";
@@ -141,7 +189,6 @@ export default function AccountantDashboard() {
         return 0;
       });
     } else {
-      // Default sort by newest date
       filtered.sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
     }
     return filtered;
@@ -150,7 +197,6 @@ export default function AccountantDashboard() {
   const uniqueCompanies = Array.from(new Set(sortedAndFilteredDocuments.map(doc => companyMap[doc.userId] || "Unknown Company")));
   const matchingUserId = Object.keys(companyMap).find(id => companyMap[id] === uniqueCompanies[0]);
 
-  // Table Header Helper
   const SortableHeader = ({ label, sortKey }: { label: string, sortKey: string }) => (
     <th 
       onClick={() => handleSort(sortKey)} 
@@ -165,9 +211,8 @@ export default function AccountantDashboard() {
       {/* HEADER SECTION */}
       <div style={{ flexShrink: 0 }}>
         <h2 style={{ margin: "0 0 0.5rem 0" }}>Accountant Compliance Triage</h2>
-        <p style={{ margin: "0 0 1rem 0", color: "#475569" }}>Documents approved by customers awaiting final COA validation and lock.</p>
+        <p style={{ margin: "0 0 1rem 0", color: "#475569" }}>Click any row to review documents awaiting final COA validation and lock.</p>
 
-        {/* 🧪 TEST BUTTONS */}
         <div style={{ display: "flex", gap: "1rem", marginBottom: "1.5rem" }}>
           <button 
             onClick={handleTriggerReports}
@@ -195,7 +240,6 @@ export default function AccountantDashboard() {
             style={{ maxWidth: "350px", padding: "0.6rem 1rem" }}
           />
 
-          {/* Original Specific Company Button */}
           {searchCompany && uniqueCompanies.length === 1 && matchingUserId && (
             <button 
               onClick={() => handleOpenReports(matchingUserId, uniqueCompanies[0])}
@@ -207,7 +251,7 @@ export default function AccountantDashboard() {
         </div>
       </div>
 
-      {/* TABLE SECTION (Sortable) */}
+      {/* TABLE SECTION (Clickable Rows) */}
       <div style={{ flex: 1, overflowY: "auto", borderRadius: "8px", border: "1px solid #e2e8f0", backgroundColor: "white", position: "relative" }}>
         <table style={{ width: "100%", textAlign: "left", borderCollapse: "collapse" }}>
           <thead style={{ position: "sticky", top: 0, backgroundColor: "#f8fafc", zIndex: 10, boxShadow: "0 1px 2px rgba(0,0,0,0.05)" }}>
@@ -217,12 +261,17 @@ export default function AccountantDashboard() {
               <SortableHeader label="Date" sortKey="extractedDate" />
               <SortableHeader label="Total" sortKey="extractedTotal" />
               <SortableHeader label="Status" sortKey="status" />
-              <th style={{ padding: "12px", borderBottom: "2px solid #e2e8f0" }}>Action</th>
             </tr>
           </thead>
           <tbody>
             {sortedAndFilteredDocuments.map((doc) => (
-              <tr key={doc.documentId} style={{ borderBottom: "1px solid #f1f5f9" }} onMouseOver={(e) => e.currentTarget.style.backgroundColor = "#f8fafc"} onMouseOut={(e) => e.currentTarget.style.backgroundColor = "transparent"}>
+              <tr 
+                key={doc.documentId} 
+                onClick={() => { setSelectedDocument(doc); setIsRejecting(false); }}
+                style={{ borderBottom: "1px solid #f1f5f9", cursor: "pointer" }} 
+                onMouseOver={(e) => e.currentTarget.style.backgroundColor = "#f8fafc"} 
+                onMouseOut={(e) => e.currentTarget.style.backgroundColor = "transparent"}
+              >
                 <td style={{ padding: "12px", fontWeight: "bold", color: "#334155" }}>
                   {companyMap[doc.userId] || "Unknown"}
                 </td>
@@ -237,19 +286,102 @@ export default function AccountantDashboard() {
                     {doc.status}
                   </span>
                 </td>
-                <td style={{ padding: "12px" }}>
-                  <button 
-                    onClick={() => { setSelectedDocument(doc); setIsRejecting(false); }}
-                    className="primary-btn" style={{ padding: "6px 12px", fontSize: "0.85rem" }}
-                  >
-                    Review
-                  </button>
-                </td>
               </tr>
             ))}
           </tbody>
         </table>
       </div>
+
+      {/* REVIEW MODAL */}
+      {selectedDocument && (
+        <div style={{
+          position: "fixed", top: 0, left: 0, width: "100vw", height: "100vh",
+          backgroundColor: "rgba(0,0,0,0.5)", display: "flex", justifyContent: "center", alignItems: "center", zIndex: 1000
+        }}>
+          <div style={{
+            background: "white", padding: "2rem", borderRadius: "12px", width: "90%", maxWidth: "700px",
+            boxShadow: "0 20px 25px -5px rgba(0,0,0,0.1)"
+          }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "1.5rem" }}>
+              <div>
+                <p style={{ margin: 0, fontSize: "0.9rem", color: "#64748b" }}><strong>Customer SUB:</strong> {selectedDocument.userId}</p>
+                <h3 style={{ margin: "4px 0 0 0" }}>Doc ID: {selectedDocument.documentId}</h3>
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: "8px" }}>
+                <span className="badge" style={{ backgroundColor: "#9333ea", color: "white", fontSize: "0.8rem", padding: "6px 12px" }}>
+                  {selectedDocument.status}
+                </span>
+                <button 
+                  onClick={() => handleViewDocument(selectedDocument)} 
+                  style={{ fontSize: "0.75rem", padding: "4px 8px", backgroundColor: "#f1f5f9", border: "1px solid #cbd5e1", borderRadius: "4px", cursor: "pointer" }}
+                >
+                  👁️ View Original
+                </button>
+              </div>
+            </div>
+
+            <div style={{ backgroundColor: "#f8fafc", padding: "1.5rem", borderRadius: "8px", display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1.5rem", marginBottom: "2rem" }}>
+              <div><strong>Vendor:</strong> {selectedDocument.extractedVendor || "-"}</div>
+              <div><strong>Total:</strong> ${selectedDocument.extractedTotal || "-"}</div>
+              <div><strong>Date:</strong> {selectedDocument.extractedDate || "-"}</div>
+              <div><strong>Tax (VAT):</strong> ${selectedDocument.extractedTax || "-"}</div>
+              <div><strong>TRN:</strong> {selectedDocument.vendorTRN || "NOT_FOUND"}</div>
+              <div><strong>Proposed COA:</strong> {selectedDocument.mappedAccountCode ? `${selectedDocument.mappedAccountCode} - ${selectedDocument.mappedAccountName}` : "-"}</div>
+            </div>
+
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: "1rem" }}>
+              <button 
+                onClick={() => alert("Bedrock MCP Agent connection will open here.")} 
+                style={{ backgroundColor: "#2563eb", color: "white", padding: "10px 20px", border: "none", borderRadius: "6px", cursor: "pointer", fontWeight: "bold" }}
+              >
+                Ask AI Agent (MCP)
+              </button>
+
+              <div style={{ display: "flex", gap: "12px", alignItems: "center" }}>
+                {isRejecting ? (
+                  <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+                    <input 
+                      type="text" 
+                      placeholder="Reason for return..." 
+                      value={rejectionNote}
+                      onChange={(e) => setRejectionNote(e.target.value)}
+                      className="input"
+                      style={{ width: "200px" }}
+                    />
+                    <button 
+                      onClick={() => handleReturnToCustomer(selectedDocument)}
+                      style={{ backgroundColor: "#ef4444", color: "white", padding: "10px 15px", border: "none", borderRadius: "6px", cursor: "pointer", fontWeight: "bold" }}
+                    >
+                      Send Back
+                    </button>
+                    <button onClick={() => setIsRejecting(false)} className="secondary-btn" style={{ border: "none", background: "transparent" }}>Cancel</button>
+                  </div>
+                ) : (
+                  <>
+                    <button 
+                      onClick={() => setIsRejecting(true)} 
+                      style={{ backgroundColor: "#f59e0b", color: "white", padding: "10px 20px", border: "none", borderRadius: "6px", cursor: "pointer", fontWeight: "bold" }}
+                    >
+                      Request Info
+                    </button>
+                    {selectedDocument.status !== "FINALIZED" && (
+                      <button 
+                        onClick={() => handleApproveAndFinalize(selectedDocument)} 
+                        style={{ backgroundColor: "#16a34a", color: "white", padding: "10px 20px", border: "none", borderRadius: "6px", cursor: "pointer", fontWeight: "bold" }}
+                      >
+                        Approve & Finalize
+                      </button>
+                    )}
+                    <button onClick={() => setSelectedDocument(null)} className="secondary-btn" style={{ border: "none", background: "transparent", color: "#64748b" }}>
+                      Close
+                    </button>
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* 📂 COMPLIANCE REPORTS ARCHIVE MODAL */}
       {showReportsModal && activeCompanyReports && (

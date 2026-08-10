@@ -48,11 +48,9 @@ export const handler: Handler<ExtractionPayload> = async (event) => {
   const documentId = fileName.split('.')[0]; 
 
   try {
+
     // ---------------------------------------------------------
-    // 1. FETCH CUSTOMER CONFIGURATION (Native GraphQL)
-    // ---------------------------------------------------------
-    // ---------------------------------------------------------
-    // 1. FETCH CUSTOMER CONFIGURATION (Native GraphQL)
+    // 1. FETCH CUSTOMER CONFIGURATION (OR SYSTEM DEFAULT)
     // ---------------------------------------------------------
     let userCoaList: any[] = [];
     let userCompanyName: string | null = null;
@@ -68,6 +66,8 @@ export const handler: Handler<ExtractionPayload> = async (event) => {
           }
         }
       `;
+      
+      // Attempt A: Fetch the specific customer's profile
       const configRes = await executeGraphQL(getQuery, { userId, documentId: "CONFIG" });
       const configRecord = configRes?.getDocumentRecord;
       
@@ -81,15 +81,28 @@ export const handler: Handler<ExtractionPayload> = async (event) => {
             : configRecord.chartOfAccounts;
         }
       }
+
+      // 🟢 Attempt B: If the customer has no COA, fetch the Global SYSTEM COA
+      if (userCoaList.length === 0) {
+        console.log(`No custom COA for ${userId}. Fetching SYSTEM default COA.`);
+        
+        const sysRes = await executeGraphQL(getQuery, { userId: "SYSTEM", documentId: "DEFAULT_COA" });
+        const sysRecord = sysRes?.getDocumentRecord;
+        
+        if (sysRecord && sysRecord.chartOfAccounts) {
+           userCoaList = typeof sysRecord.chartOfAccounts === 'string' 
+            ? JSON.parse(sysRecord.chartOfAccounts) 
+            : sysRecord.chartOfAccounts;
+        }
+      }
+
     } catch (err) {
-      console.warn("Could not fetch CONFIG record. Proceeding with defaults.", err);
+      console.warn("Could not fetch CONFIG or SYSTEM records. Proceeding with emergency defaults.", err);
     }
 
+    // Emergency Fallback (Just in case the SYSTEM record is accidentally deleted)
     if (userCoaList.length === 0) {
       userCoaList = [
-        { code: "6220", name: "Telephone & Internet" },
-        { code: "6260", name: "Fuel Expense" },
-        { code: "6330", name: "Software Subscriptions" },
         { code: "6350", name: "Miscellaneous Expenses" }
       ];
     }
