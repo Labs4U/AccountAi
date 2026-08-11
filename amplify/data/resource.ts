@@ -7,6 +7,7 @@ const schema = a.schema({
       // --- CORE IDENTIFIERS (Composite Primary Key) ---
       userId: a.string().required(),
       documentId: a.string().required(),
+      accountantId: a.string(),
    
       // --- METADATA & LIFECYCLE ---
       recordType: a.string(),
@@ -43,20 +44,37 @@ const schema = a.schema({
       companyType: a.string(),    
       companyAddress: a.string(),
       companyTrn: a.string(),     
-      chartOfAccounts: a.json(),  
+      chartOfAccounts: a.json(),
+      
+      // --- 👤 ACCOUNTANT PROFILE FIELDS ---
+      name: a.string(),
+      firmName: a.string(),
+      address: a.string(),
+      contactEmail: a.string(),  
     })
     .identifier(['userId', 'documentId'])
     .secondaryIndexes((index) => [
       index('status').queryField('listByStatus'),
-      index('mappedAccountCode').queryField('listByAccountCode')
+      index('mappedAccountCode').queryField('listByAccountCode'),
+      
+      // 🟢 NEW: Allows Customers to fetch all Accountant profiles without scanning the whole table
+      index('documentId').queryField('listByDocumentId'),
+      
+      // 🟢 NEW: Allows Accountants to instantly fetch their assigned documents, optionally sorted by status
+      index('accountantId').sortKeys(['status']).queryField('listByAccountantAndStatus')
     ])
     .authorization((allow) => [
       // Rule 1: The Customer has full CRUD access to their own records
       allow.ownerDefinedIn('userId'),
       
       // Rule 2: The Accountant can read and update ANY record in the table
-      allow.groups(['Admin']).to(['read', 'update']),
-      allow.publicApiKey().to(['read', 'update'])
+      allow.groups(['Admin']).to(['create', 'read', 'update', 'delete']),
+      
+      // Rule 3: API Key has full CRUD (for Lambda via API Key auth)
+      allow.publicApiKey().to(['create', 'read', 'update', 'delete']),
+      
+      // Rule 4: Authenticated users via Identity Pool (IAM) have full access (for Lambda execution role)
+      allow.authenticated('identityPool').to(['create', 'read', 'update', 'delete'])
     ]),
 
   // 🟢 NEW: Custom Mutation to trigger the Report Lambda manually

@@ -2,6 +2,8 @@ import { useEffect, useState, useMemo } from "react";
 import type { Schema } from "../../amplify/data/resource";
 import { generateClient } from "aws-amplify/data";
 import { getUrl, list } from "aws-amplify/storage";
+import ChatAssistant from './ChatAssistant'
+import { fetchAuthSession } from 'aws-amplify/auth'
 
 const client = generateClient<Schema>();
 
@@ -28,10 +30,22 @@ export default function AccountantDashboard() {
   const [reportLoading, setReportLoading] = useState(false);
   const [activeCompanyReports, setActiveCompanyReports] = useState<{ userId: string; name: string } | null>(null);
 
+  // --- CHAT STATE ---
+  const [accountantSub, setAccountantSub] = useState<string>("");
+
+  const [activeTab, setActiveTab] = useState<"triage" | "setup">("triage");
+  const [accountantProfile, setAccountantProfile] = useState({
+    name: "",
+    firmName: "",
+    address: "",
+    contactEmail: ""
+  });
+  const [isSavingProfile, setIsSavingProfile] = useState(false);
+
   const fetchProfiles = async () => {
     try {
-      const { data } = await client.models.DocumentRecord.list({
-        filter: { documentId: { eq: "CONFIG" } }
+      const { data } = await client.models.DocumentRecord.listByDocumentId({
+        documentId: "CUST"
       });
       const mapping: Record<string, string> = {};
       data.forEach(profile => {
@@ -47,20 +61,83 @@ export default function AccountantDashboard() {
     fetchProfiles();
     setIsLoading(true);
     
-    const subscription = client.models.DocumentRecord.observeQuery().subscribe({
-      next: (data) => {
-        const accountantDocs = data.items.filter(doc => doc.recordType !== "PROFILE");
-        setDocuments(accountantDocs);
-        setIsLoading(false);
-      },
-      error: (err) => {
-        console.error("Accountant subscription error:", err);
+    const getAccountantSubAndSubscribe = async () => {
+      try {
+        const session = await fetchAuthSession();
+        const sub = session.tokens?.idToken?.payload.sub?.toString();
+        if (sub) {
+          setAccountantSub(sub);
+          
+          const subscription = client.models.DocumentRecord.observeQuery({
+            filter: { accountantId: { eq: sub } }
+          }).subscribe({
+            next: (data: any) => {
+              // 🟢 BULLETPROOF FILTER: Only accept records where the ID starts with "doc-"
+              // This instantly drops any "CUST", "ACC", or "CONFIG" ghost rows regardless of their recordType.
+              const accountantDocs = data.items.filter((doc: any) => 
+                doc.documentId && doc.documentId.startsWith("doc-")
+              );
+              
+              setDocuments(accountantDocs);
+              setIsLoading(false);
+            },
+            error: (err: any) => {
+              console.error("Accountant subscription error:", err);
+              setIsLoading(false);
+            }
+          });
+          
+          return subscription;
+        }
+      } catch (err) {
+        console.error("Failed to get accountant SUB:", err);
         setIsLoading(false);
       }
+    };
+    
+    let subscription: any;
+    getAccountantSubAndSubscribe().then(sub => {
+      subscription = sub;
     });
-
-    return () => subscription.unsubscribe();
+    
+    return () => subscription?.unsubscribe();
   }, []);
+
+  useEffect(() => {
+    const getAccountantSub = async () => {
+      try {
+        const session = await fetchAuthSession();
+        const sub = session.tokens?.idToken?.payload.sub?.toString();
+        if (sub) setAccountantSub(sub);
+      } catch (err) {
+        console.error("Failed to fetch accountant SUB:", err);
+      }
+    };
+    getAccountantSub();
+  }, []);
+
+  useEffect(() => {
+    const loadAccountantProfile = async () => {
+      if (!accountantSub) return;
+      try {
+        const { data } = await client.models.DocumentRecord.get({
+          userId: accountantSub,
+          documentId: "ACC"
+        });
+        if (data) {
+          setAccountantProfile({
+            name: data.name || "",
+            firmName: data.firmName || "",
+            address: data.address || "",
+            contactEmail: data.contactEmail || ""
+          });
+        }
+      } catch (err) {
+        console.error("Failed to load accountant profile:", err);
+      }
+    };
+    loadAccountantProfile();
+  }, [accountantSub]);
 
   // 🧪 MANUAL LAMBDA TRIGGER
   const handleTriggerReports = async () => {
@@ -105,6 +182,61 @@ export default function AccountantDashboard() {
       window.open(link.url.toString(), "_blank");
     } catch (err) {
       alert("Failed to generate download link for report.");
+    }
+  };
+
+  const handleSaveAccountantProfile = async () => {
+    if (!accountantSub) {
+      alert("Could not identify accountant. Please try again.");
+      return;
+    }
+    if (!accountantProfile.name.trim() || !accountantProfile.firmName.trim()) {
+      alert("Name and Firm Name are required.");
+      return;
+    }
+    setIsSavingProfile(true);
+    try {
+      const existingProfile = await client.models.DocumentRecord.get({
+        userId: accountantSub,
+        documentId: "ACC"
+      });
+
+      let response;
+      const profilePayload = {
+        userId: accountantSub,
+        documentId: "ACC",
+        recordType: "PROFILE_ACC",
+        name: accountantProfile.name,
+        firmName: accountantProfile.firmName,
+        address: accountantProfile.address,
+        contactEmail: accountantProfile.contactEmail
+      };
+
+      if (!existingProfile?.data) {
+        console.log("📝 Creating new accountant profile...");
+        response = await client.models.DocumentRecord.create(profilePayload);
+      } else {
+        console.log("✏️ Updating existing accountant profile...");
+        response = await client.models.DocumentRecord.update(profilePayload);
+      }
+
+      if (response?.errors && Array.isArray(response.errors) && response.errors.length > 0) {
+        console.error("❌ AppSync Mutation Failed - Errors:", response.errors);
+        const firstError = response.errors[0];
+        const errorMessage = firstError?.message || "Unknown GraphQL error";
+        alert(`⚠️ Profile Save Failed:\n\n${errorMessage}`);
+        return; 
+      }
+
+      console.log("✅ Profile saved successfully to DynamoDB");
+      alert("Profile saved successfully!");
+      
+    } catch (err) {
+      console.error("❌ Failed to save profile - Exception:", err);
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      alert(`Failed to save profile: ${errorMessage}`);
+    } finally {
+      setIsSavingProfile(false);
     }
   };
 
@@ -207,154 +339,274 @@ export default function AccountantDashboard() {
   );
 
   return (
-    <main className="content" style={{ padding: "1.5rem 2rem", display: "flex", flexDirection: "column", height: "calc(100vh - 80px)", boxSizing: "border-box" }}>
-      {/* HEADER SECTION */}
-      <div style={{ flexShrink: 0 }}>
-        <h2 style={{ margin: "0 0 0.5rem 0" }}>Accountant Compliance Triage</h2>
-        <p style={{ margin: "0 0 1rem 0", color: "#475569" }}>Click any row to review documents awaiting final COA validation and lock.</p>
-
-        <div style={{ display: "flex", gap: "1rem", marginBottom: "1.5rem" }}>
+    <div style={{ display: "flex", gap: "2rem", width: "100%", alignItems: "flex-start", height: "calc(100vh - 80px)", padding: "1.5rem 2rem", boxSizing: "border-box", backgroundColor: "#f8fafc" }}>
+      {/* LEFT SIDE: Main Dashboard (65%) */}
+      <main className="content" style={{ flex: "1 1 65%", display: "flex", flexDirection: "column", gap: "1.5rem", overflowY: "auto" }}>
+        {/* NAV TABS */}
+        <nav className="nav-tabs" style={{ display: "flex", gap: "1rem", borderBottom: "2px solid #e2e8f0", marginBottom: "1rem", paddingBottom: "0.5rem" }}>
           <button 
-            onClick={handleTriggerReports}
-            disabled={isGenerating}
-            style={{ backgroundColor: "#0f172a", color: "white", padding: "0.5rem 1rem", borderRadius: "6px", cursor: isGenerating ? "not-allowed" : "pointer" }}
+            onClick={() => setActiveTab("triage")} 
+            className={activeTab === "triage" ? "active-tab-btn" : "tab-btn"}
+            style={{ 
+              padding: "0.75rem 1.5rem", 
+              border: "none", 
+              background: "none", 
+              fontSize: "1rem", 
+              fontWeight: activeTab === "triage" ? "700" : "500",
+              color: activeTab === "triage" ? "#4f46e5" : "#64748b",
+              cursor: "pointer",
+              borderBottom: activeTab === "triage" ? "3px solid #4f46e5" : "none",
+              marginBottom: "-0.5rem"
+            }}
           >
-            {isGenerating ? "⏳ Generating..." : "🧪 TEST: Trigger Report Generation"}
+            📋 Triage
           </button>
-          
           <button 
-            onClick={() => handleOpenReports(null, "All Global Reports")}
-            style={{ backgroundColor: "#475569", color: "white", padding: "0.5rem 1rem", borderRadius: "6px", cursor: "pointer" }}
+            onClick={() => setActiveTab("setup")} 
+            className={activeTab === "setup" ? "active-tab-btn" : "tab-btn"}
+            style={{ 
+              padding: "0.75rem 1.5rem", 
+              border: "none", 
+              background: "none", 
+              fontSize: "1rem", 
+              fontWeight: activeTab === "setup" ? "700" : "500",
+              color: activeTab === "setup" ? "#4f46e5" : "#64748b",
+              cursor: "pointer",
+              borderBottom: activeTab === "setup" ? "3px solid #4f46e5" : "none",
+              marginBottom: "-0.5rem"
+            }}
           >
-            🌍 View ALL Generated Reports
+            ⚙️ Setup
           </button>
-        </div>
+        </nav>
 
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1rem" }}>
-          <input 
-            type="text" 
-            placeholder="🔍 Search by Company Name..." 
-            value={searchCompany}
-            onChange={(e) => setSearchCompany(e.target.value)}
-            className="input"
-            style={{ maxWidth: "350px", padding: "0.6rem 1rem" }}
-          />
+        {/* TRIAGE TAB */}
+        {activeTab === "triage" && (
+          <>
+            {/* HEADER SECTION */}
+            <div style={{ flexShrink: 0 }}>
+              <h2 style={{ margin: "0 0 0.5rem 0" }}>Accountant Compliance Triage</h2>
+              <p style={{ margin: "0 0 1rem 0", color: "#475569" }}>Click any row to review documents awaiting final COA validation and lock.</p>
 
-          {searchCompany && uniqueCompanies.length === 1 && matchingUserId && (
-            <button 
-              onClick={() => handleOpenReports(matchingUserId, uniqueCompanies[0])}
-              style={{ backgroundColor: "#4f46e5", color: "white", padding: "0.6rem 1.2rem", border: "none", borderRadius: "6px", cursor: "pointer", fontWeight: "bold" }}
-            >
-              📊 View Compliance Reports ({uniqueCompanies[0]})
-            </button>
-          )}
-        </div>
-      </div>
-
-      {/* TABLE SECTION (Clickable Rows) */}
-      <div style={{ flex: 1, overflowY: "auto", borderRadius: "8px", border: "1px solid #e2e8f0", backgroundColor: "white", position: "relative" }}>
-        <table style={{ width: "100%", textAlign: "left", borderCollapse: "collapse" }}>
-          <thead style={{ position: "sticky", top: 0, backgroundColor: "#f8fafc", zIndex: 10, boxShadow: "0 1px 2px rgba(0,0,0,0.05)" }}>
-            <tr>
-              <SortableHeader label="Company" sortKey="Company" />
-              <SortableHeader label="Vendor" sortKey="extractedVendor" />
-              <SortableHeader label="Date" sortKey="extractedDate" />
-              <SortableHeader label="Total" sortKey="extractedTotal" />
-              <SortableHeader label="Status" sortKey="status" />
-            </tr>
-          </thead>
-          <tbody>
-            {sortedAndFilteredDocuments.map((doc) => (
-              <tr 
-                key={doc.documentId} 
-                onClick={() => { setSelectedDocument(doc); setIsRejecting(false); }}
-                style={{ borderBottom: "1px solid #f1f5f9", cursor: "pointer" }} 
-                onMouseOver={(e) => e.currentTarget.style.backgroundColor = "#f8fafc"} 
-                onMouseOut={(e) => e.currentTarget.style.backgroundColor = "transparent"}
-              >
-                <td style={{ padding: "12px", fontWeight: "bold", color: "#334155" }}>
-                  {companyMap[doc.userId] || "Unknown"}
-                </td>
-                <td style={{ padding: "12px" }}>{doc.extractedVendor}</td>
-                <td style={{ padding: "12px" }}>{doc.extractedDate}</td>
-                <td style={{ padding: "12px" }}>${doc.extractedTotal}</td>
-                <td style={{ padding: "12px" }}>
-                  <span className="badge" style={{ 
-                    backgroundColor: doc.status === 'FINALIZED' ? '#dcfce7' : '#f3e8ff',
-                    color: doc.status === 'FINALIZED' ? '#166534' : '#7e22ce'
-                  }}>
-                    {doc.status}
-                  </span>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-
-      {/* REVIEW MODAL */}
-      {selectedDocument && (
-        <div style={{
-          position: "fixed", top: 0, left: 0, width: "100vw", height: "100vh",
-          backgroundColor: "rgba(0,0,0,0.5)", display: "flex", justifyContent: "center", alignItems: "center", zIndex: 1000
-        }}>
-          <div style={{
-            background: "white", padding: "2rem", borderRadius: "12px", width: "90%", maxWidth: "700px",
-            boxShadow: "0 20px 25px -5px rgba(0,0,0,0.1)"
-          }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "1.5rem" }}>
-              <div>
-                <p style={{ margin: 0, fontSize: "0.9rem", color: "#64748b" }}><strong>Customer SUB:</strong> {selectedDocument.userId}</p>
-                <h3 style={{ margin: "4px 0 0 0" }}>Doc ID: {selectedDocument.documentId}</h3>
-              </div>
-              <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: "8px" }}>
-                <span className="badge" style={{ backgroundColor: "#9333ea", color: "white", fontSize: "0.8rem", padding: "6px 12px" }}>
-                  {selectedDocument.status}
-                </span>
+              <div style={{ display: "flex", gap: "1rem", marginBottom: "1.5rem", flexWrap: "wrap" }}>
                 <button 
-                  onClick={() => handleViewDocument(selectedDocument)} 
-                  style={{ fontSize: "0.75rem", padding: "4px 8px", backgroundColor: "#f1f5f9", border: "1px solid #cbd5e1", borderRadius: "4px", cursor: "pointer" }}
+                  onClick={handleTriggerReports}
+                  disabled={isGenerating}
+                  style={{ backgroundColor: "#0f172a", color: "white", padding: "0.5rem 1rem", borderRadius: "6px", cursor: isGenerating ? "not-allowed" : "pointer" }}
                 >
-                  👁️ View Original
+                  {isGenerating ? "⏳ Generating..." : "🧪 TEST: Trigger Report Generation"}
+                </button>
+                
+                <button 
+                  onClick={() => handleOpenReports(null, "All Global Reports")}
+                  style={{ backgroundColor: "#475569", color: "white", padding: "0.5rem 1rem", borderRadius: "6px", cursor: "pointer" }}
+                >
+                  🌍 View ALL Generated Reports
+                </button>
+              </div>
+
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1rem", gap: "1rem", flexWrap: "wrap" }}>
+                <input 
+                  type="text" 
+                  placeholder="🔍 Search by Company Name..." 
+                  value={searchCompany}
+                  onChange={(e) => setSearchCompany(e.target.value)}
+                  className="input"
+                  style={{ flex: "1 1 250px", padding: "0.6rem 1rem" }}
+                />
+
+                {searchCompany && uniqueCompanies.length === 1 && matchingUserId && (
+                  <button 
+                    onClick={() => handleOpenReports(matchingUserId, uniqueCompanies[0])}
+                    style={{ backgroundColor: "#4f46e5", color: "white", padding: "0.6rem 1.2rem", border: "none", borderRadius: "6px", cursor: "pointer", fontWeight: "bold", whiteSpace: "nowrap" }}
+                  >
+                    📊 View Reports ({uniqueCompanies[0]})
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* TABLE SECTION (Clickable Rows) */}
+            <div style={{ flex: 1, overflowY: "auto", borderRadius: "8px", border: "1px solid #e2e8f0", backgroundColor: "white", position: "relative", boxShadow: "0 1px 3px rgba(0,0,0,0.1)" }}>
+              <table style={{ width: "100%", textAlign: "left", borderCollapse: "collapse" }}>
+                <thead style={{ position: "sticky", top: 0, backgroundColor: "#f8fafc", zIndex: 10, boxShadow: "0 2px 4px rgba(0,0,0,0.05)" }}>
+                  <tr>
+                    <SortableHeader label="Company" sortKey="Company" />
+                    <SortableHeader label="Vendor" sortKey="extractedVendor" />
+                    <SortableHeader label="Date" sortKey="extractedDate" />
+                    <SortableHeader label="Total" sortKey="extractedTotal" />
+                    <SortableHeader label="Status" sortKey="status" />
+                  </tr>
+                </thead>
+                <tbody>
+                  {sortedAndFilteredDocuments.map((doc) => (
+                    <tr 
+                      key={doc.documentId} 
+                      onClick={() => { setSelectedDocument(doc); setIsRejecting(false); }}
+                      style={{ borderBottom: "1px solid #f1f5f9", cursor: "pointer", transition: "background-color 0.2s" }} 
+                      onMouseOver={(e) => e.currentTarget.style.backgroundColor = "#f1f5f9"}
+                      onMouseOut={(e) => e.currentTarget.style.backgroundColor = "transparent"}
+                    >
+                      <td style={{ padding: "12px", fontWeight: "bold", color: "#334155" }}>
+                        {companyMap[doc.userId] || "Unknown"}
+                      </td>
+                      <td style={{ padding: "12px" }}>{doc.extractedVendor}</td>
+                      <td style={{ padding: "12px" }}>{doc.extractedDate}</td>
+                      <td style={{ padding: "12px" }}>${doc.extractedTotal}</td>
+                      <td style={{ padding: "12px" }}>
+                        <span className="badge" style={{ 
+                          backgroundColor: doc.status === 'FINALIZED' ? '#dcfce7' : '#f3e8ff',
+                          color: doc.status === 'FINALIZED' ? '#166534' : '#7e22ce',
+                          padding: "4px 12px",
+                          borderRadius: "12px",
+                          fontSize: "0.85rem",
+                          fontWeight: "500"
+                        }}>
+                          {doc.status}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {sortedAndFilteredDocuments.length === 0 && (
+                <div style={{ textAlign: "center", padding: "3rem", color: "#64748b" }}>
+                  <p>No documents found. Check filters or wait for customer submissions.</p>
+                </div>
+              )}
+            </div>
+          </>
+        )}
+
+        {/* SETUP TAB */}
+        {activeTab === "setup" && (
+          <div style={{ maxWidth: "600px", margin: "0 auto", width: "100%" }}>
+            <h2 style={{ margin: "0 0 1rem 0" }}>Your Profile</h2>
+            <div style={{ backgroundColor: "white", padding: "2rem", borderRadius: "12px", border: "1px solid #e2e8f0", boxShadow: "0 1px 3px rgba(0,0,0,0.1)" }}>
+              <div style={{ display: "flex", flexDirection: "column", gap: "1.5rem" }}>
+                <div>
+                  <label style={{ fontWeight: "600", color: "#1f2937", marginBottom: "0.5rem", display: "block" }}>Name</label>
+                  <input
+                    type="text"
+                    value={accountantProfile.name}
+                    onChange={(e) => setAccountantProfile({ ...accountantProfile, name: e.target.value })}
+                    className="input"
+                    placeholder="Your full name"
+                    style={{ width: "100%", padding: "0.75rem 1rem" }}
+                  />
+                </div>
+
+                <div>
+                  <label style={{ fontWeight: "600", color: "#1f2937", marginBottom: "0.5rem", display: "block" }}>Firm Name</label>
+                  <input
+                    type="text"
+                    value={accountantProfile.firmName}
+                    onChange={(e) => setAccountantProfile({ ...accountantProfile, firmName: e.target.value })}
+                    className="input"
+                    placeholder="Your accounting firm name"
+                    style={{ width: "100%", padding: "0.75rem 1rem" }}
+                  />
+                </div>
+
+                <div>
+                  <label style={{ fontWeight: "600", color: "#1f2937", marginBottom: "0.5rem", display: "block" }}>Address</label>
+                  <input
+                    type="text"
+                    value={accountantProfile.address}
+                    onChange={(e) => setAccountantProfile({ ...accountantProfile, address: e.target.value })}
+                    className="input"
+                    placeholder="Business address"
+                    style={{ width: "100%", padding: "0.75rem 1rem" }}
+                  />
+                </div>
+
+                <div>
+                  <label style={{ fontWeight: "600", color: "#1f2937", marginBottom: "0.5rem", display: "block" }}>Contact Email</label>
+                  <input
+                    type="email"
+                    value={accountantProfile.contactEmail}
+                    onChange={(e) => setAccountantProfile({ ...accountantProfile, contactEmail: e.target.value })}
+                    className="input"
+                    placeholder="your.email@firm.com"
+                    style={{ width: "100%", padding: "0.75rem 1rem" }}
+                  />
+                </div>
+
+                <button
+                  onClick={handleSaveAccountantProfile}
+                  disabled={isSavingProfile}
+                  style={{
+                    backgroundColor: "#4f46e5",
+                    color: "white",
+                    padding: "0.75rem 1.5rem",
+                    borderRadius: "6px",
+                    border: "none",
+                    cursor: isSavingProfile ? "not-allowed" : "pointer",
+                    fontWeight: "600",
+                    marginTop: "1rem"
+                  }}
+                >
+                  {isSavingProfile ? "Saving..." : "Save Profile"}
                 </button>
               </div>
             </div>
+          </div>
+        )}
+        {/* ... rest of modals remain the same ... */}
+        {selectedDocument && (
+          <div style={{
+            position: "fixed", top: 0, left: 0, width: "100vw", height: "100vh",
+            backgroundColor: "rgba(0,0,0,0.5)", display: "flex", justifyContent: "center", alignItems: "center", zIndex: 1000
+          }}>
+            <div style={{
+              background: "white", padding: "2rem", borderRadius: "12px", width: "90%", maxWidth: "700px",
+              boxShadow: "0 20px 25px -5px rgba(0,0,0,0.1)", maxHeight: "90vh", overflowY: "auto"
+            }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "1.5rem" }}>
+                <div>
+                  <p style={{ margin: 0, fontSize: "0.9rem", color: "#64748b" }}><strong>Customer SUB:</strong> {selectedDocument.userId}</p>
+                  <h3 style={{ margin: "4px 0 0 0" }}>Doc ID: {selectedDocument.documentId}</h3>
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: "8px" }}>
+                  <span className="badge" style={{ backgroundColor: "#9333ea", color: "white", fontSize: "0.8rem", padding: "6px 12px" }}>
+                    {selectedDocument.status}
+                  </span>
+                  <button 
+                    onClick={() => handleViewDocument(selectedDocument)} 
+                    style={{ fontSize: "0.75rem", padding: "4px 8px", backgroundColor: "#f1f5f9", border: "1px solid #cbd5e1", borderRadius: "4px", cursor: "pointer" }}
+                  >
+                    👁️ View Original
+                  </button>
+                </div>
+              </div>
 
-            <div style={{ backgroundColor: "#f8fafc", padding: "1.5rem", borderRadius: "8px", display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1.5rem", marginBottom: "2rem" }}>
-              <div><strong>Vendor:</strong> {selectedDocument.extractedVendor || "-"}</div>
-              <div><strong>Total:</strong> ${selectedDocument.extractedTotal || "-"}</div>
-              <div><strong>Date:</strong> {selectedDocument.extractedDate || "-"}</div>
-              <div><strong>Tax (VAT):</strong> ${selectedDocument.extractedTax || "-"}</div>
-              <div><strong>TRN:</strong> {selectedDocument.vendorTRN || "NOT_FOUND"}</div>
-              <div><strong>Proposed COA:</strong> {selectedDocument.mappedAccountCode ? `${selectedDocument.mappedAccountCode} - ${selectedDocument.mappedAccountName}` : "-"}</div>
-            </div>
+              <div style={{ backgroundColor: "#f8fafc", padding: "1.5rem", borderRadius: "8px", display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1.5rem", marginBottom: "2rem" }}>
+                <div><strong>Vendor:</strong> {selectedDocument.extractedVendor || "-"}</div>
+                <div><strong>Total:</strong> ${selectedDocument.extractedTotal || "-"}</div>
+                <div><strong>Date:</strong> {selectedDocument.extractedDate || "-"}</div>
+                <div><strong>Tax (VAT):</strong> ${selectedDocument.extractedTax || "-"}</div>
+                <div><strong>TRN:</strong> {selectedDocument.vendorTRN || "NOT_FOUND"}</div>
+                <div><strong>Proposed COA:</strong> {selectedDocument.mappedAccountCode ? `${selectedDocument.mappedAccountCode} - ${selectedDocument.mappedAccountName}` : "-"}</div>
+              </div>
 
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: "1rem" }}>
-              <button 
-                onClick={() => alert("Bedrock MCP Agent connection will open here.")} 
-                style={{ backgroundColor: "#2563eb", color: "white", padding: "10px 20px", border: "none", borderRadius: "6px", cursor: "pointer", fontWeight: "bold" }}
-              >
-                Ask AI Agent (MCP)
-              </button>
-
-              <div style={{ display: "flex", gap: "12px", alignItems: "center" }}>
+              <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center", marginTop: "1rem", gap: "12px" }}>
                 {isRejecting ? (
-                  <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+                  <div style={{ display: "flex", gap: "8px", alignItems: "center", width: "100%" }}>
                     <input 
                       type="text" 
                       placeholder="Reason for return..." 
                       value={rejectionNote}
                       onChange={(e) => setRejectionNote(e.target.value)}
                       className="input"
-                      style={{ width: "200px" }}
+                      style={{ flex: 1 }}
                     />
                     <button 
                       onClick={() => handleReturnToCustomer(selectedDocument)}
-                      style={{ backgroundColor: "#ef4444", color: "white", padding: "10px 15px", border: "none", borderRadius: "6px", cursor: "pointer", fontWeight: "bold" }}
+                      style={{ backgroundColor: "#ef4444", color: "white", padding: "10px 15px", border: "none", borderRadius: "6px", cursor: "pointer", fontWeight: "bold", whiteSpace: "nowrap" }}
                     >
                       Send Back
                     </button>
-                    <button onClick={() => setIsRejecting(false)} className="secondary-btn" style={{ border: "none", background: "transparent" }}>Cancel</button>
+                    <button onClick={() => setIsRejecting(false)} className="secondary-btn" style={{ border: "none", background: "transparent", whiteSpace: "nowrap" }}>Cancel</button>
                   </div>
                 ) : (
                   <>
@@ -380,62 +632,71 @@ export default function AccountantDashboard() {
               </div>
             </div>
           </div>
-        </div>
-      )}
+        )}
 
-      {/* 📂 COMPLIANCE REPORTS ARCHIVE MODAL */}
-      {showReportsModal && activeCompanyReports && (
-        <div style={{
-          position: "fixed", top: 0, left: 0, width: "100vw", height: "100vh",
-          backgroundColor: "rgba(0,0,0,0.6)", display: "flex", justifyContent: "center", alignItems: "center", zIndex: 1000
-        }}>
+        {/* 📂 COMPLIANCE REPORTS ARCHIVE MODAL */}
+        {showReportsModal && activeCompanyReports && (
           <div style={{
-            background: "white", padding: "2rem", borderRadius: "12px", width: "90%", maxWidth: "750px",
-            maxHeight: "85vh", overflowY: "auto", boxShadow: "0 20px 25px -5px rgba(0,0,0,0.2)"
+            position: "fixed", top: 0, left: 0, width: "100vw", height: "100vh",
+            backgroundColor: "rgba(0,0,0,0.6)", display: "flex", justifyContent: "center", alignItems: "center", zIndex: 1000
           }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.5rem" }}>
-              <div>
-                <h3 style={{ margin: 0, color: "#1e293b" }}>Compliance Reports Archive</h3>
-                <p style={{ margin: "4px 0 0 0", color: "#64748b", fontSize: "0.9rem" }}>Viewing: <strong>{activeCompanyReports.name}</strong></p>
+            <div style={{
+              background: "white", padding: "2rem", borderRadius: "12px", width: "90%", maxWidth: "750px",
+              maxHeight: "85vh", overflowY: "auto", boxShadow: "0 20px 25px -5px rgba(0,0,0,0.2)"
+            }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.5rem" }}>
+                <div>
+                  <h3 style={{ margin: 0, color: "#1e293b" }}>Compliance Reports Archive</h3>
+                  <p style={{ margin: "4px 0 0 0", color: "#64748b", fontSize: "0.9rem" }}>Viewing: <strong>{activeCompanyReports.name}</strong></p>
+                </div>
+                <button onClick={() => setShowReportsModal(false)} style={{ background: "none", border: "none", fontSize: "1.5rem", cursor: "pointer", color: "#64748b" }}>✖</button>
               </div>
-              <button onClick={() => setShowReportsModal(false)} style={{ background: "none", border: "none", fontSize: "1.5rem", cursor: "pointer", color: "#64748b" }}>✖</button>
-            </div>
 
-            {reportLoading ? (
-              <p style={{ textAlign: "center", padding: "2rem", color: "#64748b" }}>Loading generated reports from S3...</p>
-            ) : reportFiles.length === 0 ? (
-              <div style={{ textAlign: "center", padding: "2.5rem", backgroundColor: "#f8fafc", borderRadius: "8px", color: "#64748b" }}>
-                <p style={{ margin: 0, fontWeight: "600" }}>No compliance reports found.</p>
-              </div>
-            ) : (
-              <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
-                {reportFiles.map((file, idx) => (
-                  <div key={idx} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "1rem", backgroundColor: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: "8px" }}>
-                    <div>
-                      <p style={{ margin: 0, fontWeight: "bold", color: "#334155", fontSize: "0.95rem" }}>
-                        {file.path.split('/').pop()}
-                      </p>
-                      <p style={{ margin: "2px 0 0 0", fontSize: "0.75rem", color: "#64748b" }}>
-                        Path: {file.path}
-                      </p>
+              {reportLoading ? (
+                <p style={{ textAlign: "center", padding: "2rem", color: "#64748b" }}>Loading generated reports from S3...</p>
+              ) : reportFiles.length === 0 ? (
+                <div style={{ textAlign: "center", padding: "2.5rem", backgroundColor: "#f8fafc", borderRadius: "8px", color: "#64748b" }}>
+                  <p style={{ margin: 0, fontWeight: "600" }}>No compliance reports found.</p>
+                </div>
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+                  {reportFiles.map((file, idx) => (
+                    <div key={idx} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "1rem", backgroundColor: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: "8px" }}>
+                      <div>
+                        <p style={{ margin: 0, fontWeight: "bold", color: "#334155", fontSize: "0.95rem" }}>
+                          {file.path.split('/').pop()}
+                        </p>
+                        <p style={{ margin: "2px 0 0 0", fontSize: "0.75rem", color: "#64748b" }}>
+                          Path: {file.path}
+                        </p>
+                      </div>
+                      <button 
+                        onClick={() => handleDownloadReportFile(file.path)}
+                        style={{ backgroundColor: "#2563eb", color: "white", padding: "8px 14px", border: "none", borderRadius: "6px", cursor: "pointer", fontWeight: "bold", fontSize: "0.85rem" }}
+                      >
+                        📥 Download CSV
+                      </button>
                     </div>
-                    <button 
-                      onClick={() => handleDownloadReportFile(file.path)}
-                      style={{ backgroundColor: "#2563eb", color: "white", padding: "8px 14px", border: "none", borderRadius: "6px", cursor: "pointer", fontWeight: "bold", fontSize: "0.85rem" }}
-                    >
-                      📥 Download CSV
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
+                  ))}
+                </div>
+              )}
 
-            <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "2rem" }}>
-              <button onClick={() => setShowReportsModal(false)} className="secondary-btn">Close Archive</button>
+              <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "2rem" }}>
+                <button onClick={() => setShowReportsModal(false)} className="secondary-btn">Close Archive</button>
+              </div>
             </div>
           </div>
-        </div>
-      )}
-    </main>
+        )}
+      </main>
+
+      {/* RIGHT SIDE: Chat Assistant (35%, sticky) */}
+      <aside style={{ flex: "1 1 35%", position: "sticky", top: "2rem", height: "fit-content", maxHeight: "calc(100vh - 5rem)" }}>
+        <ChatAssistant 
+          documentId={selectedDocument ? selectedDocument.documentId : "dashboard_general"} 
+          userId={accountantSub}
+          accountantId={accountantSub}
+        />
+      </aside>
+    </div>
   );
 }

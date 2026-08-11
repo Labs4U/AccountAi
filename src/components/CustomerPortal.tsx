@@ -4,6 +4,7 @@ import { generateClient } from "aws-amplify/data";
 import { fetchAuthSession } from "aws-amplify/auth";
 import { uploadData, getUrl, list } from "aws-amplify/storage";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
+import ChatAssistant from './ChatAssistant';
 
 const client = generateClient<Schema>();
 
@@ -59,11 +60,16 @@ export default function CustomerPortal() {
   const [userSub, setUserSub] = useState<string>("");
   const [uploadProgress, setUploadProgress] = useState(0);
   const isMounted = useRef(true);
-  const [configRecordId, setConfigRecordId] = useState<string | null>(null);
+  const [customerProfile, setCustomerProfile] = useState<Schema["DocumentRecord"]["type"] | null>(null);
+  
   const [companyName, setCompanyName] = useState("");
   const [companyType, setCompanyType] = useState("WLL");
   const [companyAddress, setCompanyAddress] = useState("");
   const [companyTrn, setCompanyTrn] = useState("");
+  const [selectedAccountantSub, setSelectedAccountantSub] = useState<string>("");
+  
+  // --- ACCOUNTANT STATE ---
+  const [availableAccountants, setAvailableAccountants] = useState<Array<Schema["DocumentRecord"]["type"]>>([]);
   
   // --- COA STATE & MODALS ---
   const [coaList, setCoaList] = useState<{ code: string; name: string }[]>([]);
@@ -77,10 +83,41 @@ export default function CustomerPortal() {
   const [showCoaDropdown, setShowCoaDropdown] = useState(false);
   const [editForm, setEditForm] = useState({ vendorName: "", date: "", total: "", tax: "" });
   const [isApproving, setIsApproving] = useState(false);
+  // --- CHAT STATE ---
+  const [isChatOpen, setIsChatOpen] = useState(false);
 
   // --- REPORTS STATE ---
   const [reportFiles, setReportFiles] = useState<any[]>([]);
   const [isLoadingReports, setIsLoadingReports] = useState(false);
+  const [isSavingProfile, setIsSavingProfile] = useState(false);
+
+  // 1. Strict Derived Validation State
+  const isFormValid = useMemo(() => {
+    const isNameValid = companyName.trim().length > 0;
+    const isTypeValid = companyType.trim().length > 0;
+    const isTrnValid = companyTrn.trim().length > 0;
+    const isAddressValid = companyAddress.trim().length > 0;
+    const isAccountantSelected = selectedAccountantSub.trim().length > 0;
+    
+    return isNameValid && isTypeValid && isTrnValid && isAddressValid && isAccountantSelected;
+  }, [companyName, companyType, companyTrn, companyAddress, selectedAccountantSub]);
+
+  // 2. Fetch Accountants via Indexed Query
+  useEffect(() => {
+    const fetchAccountants = async () => {
+      try {
+        // 🟢 CRITICAL FIX: Add { authMode: "apiKey" } so standard customers can read accountant profiles
+        const { data } = await client.models.DocumentRecord.listByDocumentId(
+          { documentId: "ACC" },
+          { authMode: "apiKey" } 
+        );
+        setAvailableAccountants(data || []);
+      } catch (err) {
+        console.error("Failed to fetch accountants:", err);
+      }
+    };
+    fetchAccountants();
+  }, []);
 
   useEffect(() => {
     const fetchSystemCOA = async () => {
@@ -107,18 +144,19 @@ export default function CustomerPortal() {
           filter: { userId: { eq: sub } }
         }).subscribe({
           next: (data) => {
-            const config = data.items.find(d => d.documentId === "CONFIG");
-            const docs = data.items.filter(d => d.documentId !== "CONFIG");
+            const profile = data.items.find(d => d.documentId === "CUST");
+            const docs = data.items.filter(d => d.documentId !== "CUST");
 
             setDocuments([...docs].sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || "")));
 
-            if (config) {
-              setConfigRecordId(config.documentId); 
-              setCompanyName(config.companyName || "");
-              setCompanyType(config.companyType || "WLL");
-              setCompanyAddress(config.companyAddress || "");
-              setCompanyTrn(config.companyTrn || "");
-              setCoaList(parseCOA(config.chartOfAccounts));
+            if (profile) {
+              setCustomerProfile(profile);
+              setCompanyName(profile.companyName || "");
+              setCompanyType(profile.companyType || "WLL");
+              setCompanyAddress(profile.companyAddress || "");
+              setCompanyTrn(profile.companyTrn || "");
+              setSelectedAccountantSub(profile.accountantId || "");
+              setCoaList(parseCOA(profile.chartOfAccounts));
             }
           },
           error: (err) => console.warn("AppSync Subscription error:", err)
@@ -162,20 +200,30 @@ export default function CustomerPortal() {
     return { chartData: sortedData, chartCategories: Array.from(categories) };
   }, [documents]);
 
+  // 🟢 FETCH REPORTS FOR THE LOGGED-IN CUSTOMER
   const fetchReports = async () => {
-    if (!userSub || !companyName) return;
+    if (!userSub) return;
     setIsLoadingReports(true);
     try {
-      const sanitizedCompany = companyName.replace(/[^a-zA-Z0-9_-]/g, "_");
-      const prefix = `reports/${userSub}_${sanitizedCompany}/`;
-      const result = await list({ path: prefix });
-      setReportFiles(result.items.filter(i => i.size && i.size > 0));
+      // List all reports and filter strictly by the customer's Cognito SUB
+      const result = await list({ path: `reports/` });
+      const userReports = result.items.filter(
+        item => item.path.includes(userSub) && item.size && item.size > 0
+      );
+      setReportFiles(userReports);
     } catch (err) {
-      console.error("Failed to fetch reports:", err);
+      console.error("Failed to fetch customer reports:", err);
+      setReportFiles([]);
     } finally {
       setIsLoadingReports(false);
     }
   };
+
+  useEffect(() => {
+    if (activeTab === "analytics" && userSub) {
+      fetchReports();
+    }
+  }, [activeTab, userSub]);
 
   useEffect(() => {
     if (activeTab === "analytics") {
@@ -186,21 +234,56 @@ export default function CustomerPortal() {
 
   const handleSaveProfile = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!userSub) return;
+    if (!userSub) {
+      alert("Could not identify your account. Please refresh and try again.");
+      return;
+    }
+    
+    // Strict secondary validation intercept
+    if (!isFormValid) {
+      alert("Please fill in all required fields and select an accountant.");
+      return;
+    }
+
+    setIsSavingProfile(true);
     try {
-      const formattedCoa = JSON.stringify(coaList); 
-      if (configRecordId) {
-        await client.models.DocumentRecord.update({
-          userId: userSub, documentId: "CONFIG", companyName, companyType, companyAddress, companyTrn, chartOfAccounts: formattedCoa 
-        });
+      const formattedCoa = JSON.stringify(coaList);
+      
+      const profilePayload = {
+        userId: userSub,
+        documentId: "CUST",
+        recordType: "PROFILE_CUST",
+        companyName,
+        companyType,
+        companyAddress,
+        companyTrn,
+        chartOfAccounts: formattedCoa,
+        accountantId: selectedAccountantSub
+      };
+
+      let response;
+      if (customerProfile) {
+        response = await client.models.DocumentRecord.update(profilePayload);
       } else {
-        await client.models.DocumentRecord.create({
-          userId: userSub, documentId: "CONFIG", recordType: "PROFILE", companyName, companyType, companyAddress, companyTrn, chartOfAccounts: formattedCoa 
-        });
+        response = await client.models.DocumentRecord.create(profilePayload);
       }
+
+      // AppSync strict error checking intercept
+      if (response?.errors && Array.isArray(response.errors) && response.errors.length > 0) {
+        console.error("❌ AppSync Mutation Failed - Errors:", response.errors);
+        const errorMessage = response.errors[0]?.message || "Unknown GraphQL error";
+        alert(`⚠️ Configuration Save Failed:\n\n${errorMessage}`);
+        return; 
+      }
+
       alert("Company Setup Saved!");
-    } catch (err: any) {
-      alert(`Failed to save profile: ${err.message || err}`);
+      
+    } catch (err) {
+      console.error("❌ Failed to save profile - Exception:", err);
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      alert(`Failed to save profile: ${errorMessage}`);
+    } finally {
+      setIsSavingProfile(false);
     }
   };
 
@@ -229,8 +312,12 @@ export default function CustomerPortal() {
       }).result;
 
       const newDocRecord = {
-        userId: userSub, documentId: documentId, recordType: "DOCUMENT",
-        status: "PROCESSING", s3RawUri: `s3://account-ai-bh/${rawPath}`
+        userId: userSub, 
+        documentId: documentId, 
+        recordType: "DOCUMENT",
+        status: "PROCESSING", 
+        s3RawUri: `s3://account-ai-bh/${rawPath}`,
+        accountantId: customerProfile?.accountantId || undefined
       } as Schema["DocumentRecord"]["type"];
 
       if (isMounted.current) {
@@ -297,7 +384,6 @@ export default function CustomerPortal() {
 
           <div style={{ display: "flex", gap: "2rem", flexWrap: "wrap", alignItems: "flex-start" }}>
             
-            {/* 🟢 LEFT COMPONENT: The Chart */}
             <div style={{ flex: "1 1 600px", backgroundColor: '#161b22', padding: '24px', borderRadius: '12px', color: '#e5e7eb', fontFamily: 'sans-serif', boxShadow: "0 10px 15px -3px rgba(0,0,0,0.1)" }}>
               <div style={{ marginBottom: '24px' }}>
                 <h2 style={{ fontSize: '1.25rem', fontWeight: 'bold', margin: '0 0 16px 0', display: 'flex', alignItems: 'center', gap: '8px' }}>
@@ -320,7 +406,7 @@ export default function CustomerPortal() {
                       <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#374151" />
                       <XAxis dataKey="month" axisLine={{ stroke: '#4b5563' }} tickLine={false} tick={{ fill: '#9ca3af', fontSize: '0.85rem' }} dy={10} />
                       <YAxis axisLine={false} tickLine={false} tick={{ fill: '#9ca3af', fontSize: '0.85rem' }} tickFormatter={(value) => `$${value}`} />
-                      <Tooltip cursor={{ fill: '#1f2937' }} contentStyle={{ backgroundColor: '#1f2937', border: 'none', borderRadius: '6px', color: '#f3f4f6' }} itemStyle={{ color: '#f3f4f6' }} formatter={(value: number) => `$${value.toFixed(2)}`} />
+                      <Tooltip cursor={{ fill: '#1f2937' }} contentStyle={{ backgroundColor: '#1f2937', border: 'none', borderRadius: '6px', color: '#f3f4f6' }} itemStyle={{ color: '#f3f4f6' }} formatter={(value: any) => `$${(value as number).toFixed(2)}`} />
                       <Legend content={renderLegend} />
                       {chartCategories.map((cat, idx) => (
                         <Bar key={cat} dataKey={cat} name={cat} stackId="a" fill={CHART_COLORS[idx % CHART_COLORS.length]} />
@@ -335,7 +421,6 @@ export default function CustomerPortal() {
               </div>
             </div>
 
-            {/* 🟢 RIGHT COMPONENT: Compact Download List */}
             <div style={{ flex: "1 1 250px", backgroundColor: "#f8fafc", padding: "1.5rem", borderRadius: "12px", border: "1px solid #e2e8f0" }}>
               <h3 style={{ margin: "0 0 1rem 0", fontSize: "1.1rem", color: "#1e293b", borderBottom: "2px solid #e2e8f0", paddingBottom: "0.5rem" }}>
                 📑 Period Reports
@@ -392,6 +477,27 @@ export default function CustomerPortal() {
               </div>
               <div className="form-group"><label>Company TRN (VAT ID)</label><input value={companyTrn} onChange={e => setCompanyTrn(e.target.value)} className="input" /></div>
               <div className="form-group" style={{ width: "100%" }}><label>Registered Address</label><input value={companyAddress} onChange={e => setCompanyAddress(e.target.value)} className="input" style={{ width: "100%" }} /></div>
+              
+              <div className="form-group" style={{ width: "100%" }}>
+                <label htmlFor="accountant-select">Assigned Accountant</label>
+                <select 
+                  id="accountant-select"
+                  value={selectedAccountantSub} 
+                  onChange={e => setSelectedAccountantSub(e.target.value)} 
+                  className="input"
+                  style={{ width: "100%" }}
+                >
+                  <option value="">-- Select Your Accountant --</option>
+                  {availableAccountants.map((accountant) => (
+                    <option key={accountant.userId} value={accountant.userId || ""}>
+                      {accountant.firmName || accountant.name || "Unnamed Accountant"}
+                    </option>
+                  ))}
+                </select>
+                <p style={{ margin: "0.5rem 0 0 0", color: "#666", fontSize: "0.9rem" }}>
+                  Select the accounting firm that will review your documents
+                </p>
+              </div>
             </div>
 
             <div style={{ background: "#f8f9fa", padding: "1.5rem", borderRadius: "8px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
@@ -406,7 +512,20 @@ export default function CustomerPortal() {
               <button type="button" onClick={() => setIsCoaModalOpen(true)} className="secondary-btn">Manage Chart of Accounts</button>
             </div>
             
-            <button type="submit" className="success-btn" style={{ marginTop: "2rem" }}>Save Configuration</button>
+            <button 
+              type="submit" 
+              className="success-btn" 
+              style={{ 
+                marginTop: "2rem",
+                // 🟢 CRITICAL FIX: Force the button to visually fade out and show a "stop" cursor when disabled
+                opacity: (!isFormValid || isSavingProfile) ? 0.5 : 1,
+                cursor: (!isFormValid || isSavingProfile) ? "not-allowed" : "pointer"
+              }} 
+              disabled={!isFormValid || isSavingProfile}
+              title={!isFormValid ? "Please fill in all required fields and select an accountant" : ""}
+            >
+              {isSavingProfile ? "Saving..." : "Save Configuration"}
+            </button>
           </form>
         </div>
       )}
@@ -474,106 +593,121 @@ export default function CustomerPortal() {
           backgroundColor: "rgba(0,0,0,0.6)", display: "flex", justifyContent: "center", alignItems: "center", zIndex: 1000
         }}>
           <div style={{
-            background: "white", padding: "2rem", borderRadius: "12px", width: "90%", maxWidth: "600px",
-            maxHeight: "90vh", overflowY: "auto", boxShadow: "0 10px 25px rgba(0,0,0,0.2)"
+            background: "white", padding: "2rem", borderRadius: "12px", width: "90%", maxWidth: isChatOpen ? "1200px" : "600px",
+            maxHeight: "90vh", overflowY: "auto", boxShadow: "0 10px 25px rgba(0,0,0,0.2)",
+            display: isChatOpen ? "flex" : "block", gap: isChatOpen ? "2rem" : "0", flexDirection: isChatOpen ? "row" : "column"
           }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.5rem" }}>
-              <h2 style={{ margin: 0 }}>Document: {selectedDocument.documentId}</h2>
-              <div style={{ display: "flex", gap: "12px", alignItems: "center" }}>
-                <button type="button" onClick={() => handleViewDocument(selectedDocument)} style={{ fontSize: "0.75rem", padding: "4px 8px", backgroundColor: "#f1f5f9", border: "1px solid #cbd5e1", borderRadius: "4px", cursor: "pointer", color: "#334155" }}>👁️ View Original</button>
-                <button onClick={() => setSelectedDocument(null)} style={{ background: "none", border: "none", fontSize: "1.5rem", cursor: "pointer", color: "#64748b" }}>✖</button>
+            <div style={{ flex: isChatOpen ? "0 0 60%" : "1", overflowY: isChatOpen ? "auto" : "visible", maxHeight: isChatOpen ? "calc(90vh - 4rem)" : "auto" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.5rem" }}>
+                <h2 style={{ margin: 0 }}>Document: {selectedDocument.documentId}</h2>
+                <div style={{ display: "flex", gap: "12px", alignItems: "center" }}>
+                  <button type="button" onClick={() => handleViewDocument(selectedDocument)} style={{ fontSize: "0.75rem", padding: "4px 8px", backgroundColor: "#f1f5f9", border: "1px solid #cbd5e1", borderRadius: "4px", cursor: "pointer", color: "#334155" }}>👁️ View Original</button>
+                  <button type="button" onClick={() => setIsChatOpen(!isChatOpen)} style={{ fontSize: "0.75rem", padding: "4px 8px", backgroundColor: isChatOpen ? "#e0d7f7" : "#f1f5f9", border: "1px solid #cbd5e1", borderRadius: "4px", cursor: "pointer", color: isChatOpen ? "#6366f1" : "#334155" }}>🤖 Ask AI Agent</button>
+                  <button onClick={() => { setSelectedDocument(null); setIsChatOpen(false); }} style={{ background: "none", border: "none", fontSize: "1.5rem", cursor: "pointer", color: "#64748b" }}>✖</button>
+                </div>
               </div>
+
+              {selectedDocument.status === "PENDING_CUSTOMER" ? (
+                <form onSubmit={async (e) => {
+                  e.preventDefault();
+                  if (!selectedDocument) return;
+                  setIsApproving(true);
+                  try {
+                    const [newCoaCode, newCoaName] = coaSearch.split(" - ");
+                    const newStatus = (selectedDocument.aiConfidenceScore ?? 100) < 90 || !selectedDocument.isMathValid ? "CUSTOMER_APPROVED_FLAGGED" : "CUSTOMER_APPROVED_CLEAN";
+
+                    await client.models.DocumentRecord.update({
+                      userId: selectedDocument.userId, documentId: selectedDocument.documentId, status: newStatus, 
+                      extractedVendor: editForm.vendorName, extractedTotal: editForm.total ? parseFloat(editForm.total) : null,
+                      extractedTax: editForm.tax ? parseFloat(editForm.tax) : null, extractedDate: editForm.date || null,
+                      mappedAccountCode: newCoaCode || selectedDocument.mappedAccountCode, mappedAccountName: newCoaName || selectedDocument.mappedAccountName, accountantNote: null 
+                    });
+                    setSelectedDocument(null);
+                    setIsChatOpen(false);
+                  } catch (err) { alert("Failed to save changes."); } finally { setIsApproving(false); }
+                }}>
+                  {selectedDocument.accountantNote ? (
+                    <div style={{ backgroundColor: "#fef3c7", borderLeft: "4px solid #f59e0b", padding: "1rem", borderRadius: "8px", marginBottom: "1.5rem" }}>
+                      <strong style={{ color: "#92400e", fontSize: "1rem" }}>⚠️ Accountant Feedback:</strong>
+                      <p style={{ margin: "0.5rem 0 0 0", color: "#78350f", fontWeight: "600", fontSize: "0.95rem" }}>"{selectedDocument.accountantNote}"</p>
+                    </div>
+                  ) : (
+                    <div style={{ backgroundColor: "#e0f2fe", padding: "1rem", borderRadius: "8px", marginBottom: "1.5rem" }}>
+                      <strong>Action Required:</strong> Please verify the AI extracted data below.
+                    </div>
+                  )}
+
+                  <div style={{ display: "flex", gap: "1rem", flexWrap: "wrap" }}>
+                    <div className="form-group"><label>Vendor</label><input value={editForm.vendorName} onChange={e => setEditForm({...editForm, vendorName: e.target.value})} className="input" /></div>
+                    <div className="form-group"><label>Date</label><input value={editForm.date} onChange={e => setEditForm({...editForm, date: e.target.value})} className="input" /></div>
+                    <div className="form-group"><label>Total</label><input type="number" step="0.01" value={editForm.total} onChange={e => setEditForm({...editForm, total: e.target.value})} className="input" /></div>
+                    <div className="form-group"><label>Tax</label><input type="number" step="0.01" value={editForm.tax} onChange={e => setEditForm({...editForm, tax: e.target.value})} className="input" /></div>
+
+                    <div className="form-group" style={{ flexBasis: "100%", marginTop: "1rem", position: "relative" }}>
+                      <label style={{ fontWeight: "bold", color: "#4f46e5", display: "block", marginBottom: "0.5rem" }}>✨ AI Proposed Category (COA)</label>
+                      <input 
+                        type="text" value={coaSearch}
+                        onChange={(e) => { setCoaSearch(e.target.value); setShowCoaDropdown(true); }}
+                        onFocus={() => setShowCoaDropdown(true)}
+                        onBlur={() => setTimeout(() => setShowCoaDropdown(false), 200)}
+                        className="input" placeholder="Start typing COA code or name..." autoComplete="off"
+                        style={{ width: "100%", boxSizing: "border-box", padding: "0.75rem", fontSize: "1rem" }}
+                      />
+                      
+                      {showCoaDropdown && (
+                        <div style={{
+                          position: "absolute", top: "100%", left: 0, right: 0, backgroundColor: "#ffffff", border: "1px solid #cbd5e1", 
+                          borderRadius: "0 0 8px 8px", zIndex: 50, maxHeight: "180px", overflowY: "auto", boxShadow: "0 4px 6px -1px rgba(0,0,0,0.1)"
+                        }}>
+                          {activeCoaDropdownList
+                            .filter(c => `${c.code} - ${c.name}`.toLowerCase().includes(coaSearch.toLowerCase()))
+                            .map(c => (
+                              <div 
+                                key={c.code} 
+                                onMouseDown={(e) => { e.preventDefault(); setCoaSearch(`${c.code} - ${c.name}`); setShowCoaDropdown(false); }}
+                                style={{ padding: "0.75rem", cursor: "pointer", borderBottom: "1px solid #f1f5f9", color: "#000" }}
+                                onMouseOver={(e) => e.currentTarget.style.backgroundColor = "#f1f5f9"}
+                                onMouseOut={(e) => e.currentTarget.style.backgroundColor = "transparent"}
+                              >
+                                {c.code} - {c.name}
+                              </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                  
+                  <div style={{ display: "flex", justifyContent: "flex-end", gap: "1rem", marginTop: "2rem" }}>
+                    <button type="button" onClick={() => { setSelectedDocument(null); setIsChatOpen(false); }} className="secondary-btn" disabled={isApproving}>Cancel</button>
+                    <button type="submit" className="success-btn" disabled={isApproving}>{isApproving ? "Approving..." : "Approve & Send to Accountant"}</button>
+                  </div>
+                </form>
+              ) : (
+                <div>
+                  <div style={{ display: "flex", gap: "1rem", marginBottom: "1.5rem" }}><span className="badge">{selectedDocument.status}</span></div>
+                  <table style={{ width: "100%", textAlign: "left", lineHeight: "2" }}>
+                    <tbody>
+                      <tr><th style={{ width: "150px" }}>Vendor:</th><td>{selectedDocument.extractedVendor || "-"}</td></tr>
+                      <tr><th>Date:</th><td>{selectedDocument.extractedDate || "-"}</td></tr>
+                      <tr><th>Total:</th><td>{selectedDocument.extractedTotal ? `$${selectedDocument.extractedTotal}` : "-"}</td></tr>
+                      <tr><th>Tax:</th><td>{selectedDocument.extractedTax ? `$${selectedDocument.extractedTax}` : "-"}</td></tr>
+                      <tr><th>Category (COA):</th><td>{selectedDocument.mappedAccountCode ? `${selectedDocument.mappedAccountCode} - ${selectedDocument.mappedAccountName}` : "-"}</td></tr>
+                    </tbody>
+                  </table>
+                  <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "2rem" }}>
+                    <button onClick={() => { setSelectedDocument(null); setIsChatOpen(false); }} className="secondary-btn">Close</button>
+                  </div>
+                </div>
+              )}
             </div>
 
-            {selectedDocument.status === "PENDING_CUSTOMER" ? (
-              <form onSubmit={async (e) => {
-                e.preventDefault();
-                if (!selectedDocument) return;
-                setIsApproving(true);
-                try {
-                  const [newCoaCode, newCoaName] = coaSearch.split(" - ");
-                  const newStatus = (selectedDocument.aiConfidenceScore ?? 100) < 90 || !selectedDocument.isMathValid ? "CUSTOMER_APPROVED_FLAGGED" : "CUSTOMER_APPROVED_CLEAN";
-
-                  await client.models.DocumentRecord.update({
-                    userId: selectedDocument.userId, documentId: selectedDocument.documentId, status: newStatus, 
-                    extractedVendor: editForm.vendorName, extractedTotal: editForm.total ? parseFloat(editForm.total) : null,
-                    extractedTax: editForm.tax ? parseFloat(editForm.tax) : null, extractedDate: editForm.date || null,
-                    mappedAccountCode: newCoaCode || selectedDocument.mappedAccountCode, mappedAccountName: newCoaName || selectedDocument.mappedAccountName, accountantNote: null 
-                  });
-                  setSelectedDocument(null);
-                } catch (err) { alert("Failed to save changes."); } finally { setIsApproving(false); }
-              }}>
-                {selectedDocument.accountantNote ? (
-                  <div style={{ backgroundColor: "#fef3c7", borderLeft: "4px solid #f59e0b", padding: "1rem", borderRadius: "8px", marginBottom: "1.5rem" }}>
-                    <strong style={{ color: "#92400e", fontSize: "1rem" }}>⚠️ Accountant Feedback:</strong>
-                    <p style={{ margin: "0.5rem 0 0 0", color: "#78350f", fontWeight: "600", fontSize: "0.95rem" }}>"{selectedDocument.accountantNote}"</p>
-                  </div>
-                ) : (
-                  <div style={{ backgroundColor: "#e0f2fe", padding: "1rem", borderRadius: "8px", marginBottom: "1.5rem" }}>
-                    <strong>Action Required:</strong> Please verify the AI extracted data below.
-                  </div>
-                )}
-
-                <div style={{ display: "flex", gap: "1rem", flexWrap: "wrap" }}>
-                  <div className="form-group"><label>Vendor</label><input value={editForm.vendorName} onChange={e => setEditForm({...editForm, vendorName: e.target.value})} className="input" /></div>
-                  <div className="form-group"><label>Date</label><input value={editForm.date} onChange={e => setEditForm({...editForm, date: e.target.value})} className="input" /></div>
-                  <div className="form-group"><label>Total</label><input type="number" step="0.01" value={editForm.total} onChange={e => setEditForm({...editForm, total: e.target.value})} className="input" /></div>
-                  <div className="form-group"><label>Tax</label><input type="number" step="0.01" value={editForm.tax} onChange={e => setEditForm({...editForm, tax: e.target.value})} className="input" /></div>
-
-                  <div className="form-group" style={{ flexBasis: "100%", marginTop: "1rem", position: "relative" }}>
-                    <label style={{ fontWeight: "bold", color: "#4f46e5", display: "block", marginBottom: "0.5rem" }}>✨ AI Proposed Category (COA)</label>
-                    <input 
-                      type="text" value={coaSearch}
-                      onChange={(e) => { setCoaSearch(e.target.value); setShowCoaDropdown(true); }}
-                      onFocus={() => setShowCoaDropdown(true)}
-                      onBlur={() => setTimeout(() => setShowCoaDropdown(false), 200)}
-                      className="input" placeholder="Start typing COA code or name..." autoComplete="off"
-                      style={{ width: "100%", boxSizing: "border-box", padding: "0.75rem", fontSize: "1rem" }}
-                    />
-                    
-                    {showCoaDropdown && (
-                      <div style={{
-                        position: "absolute", top: "100%", left: 0, right: 0, backgroundColor: "#ffffff", border: "1px solid #cbd5e1", 
-                        borderRadius: "0 0 8px 8px", zIndex: 50, maxHeight: "180px", overflowY: "auto", boxShadow: "0 4px 6px -1px rgba(0,0,0,0.1)"
-                      }}>
-                        {activeCoaDropdownList
-                          .filter(c => `${c.code} - ${c.name}`.toLowerCase().includes(coaSearch.toLowerCase()))
-                          .map(c => (
-                            <div 
-                              key={c.code} 
-                              onMouseDown={(e) => { e.preventDefault(); setCoaSearch(`${c.code} - ${c.name}`); setShowCoaDropdown(false); }}
-                              style={{ padding: "0.75rem", cursor: "pointer", borderBottom: "1px solid #f1f5f9", color: "#000" }}
-                              onMouseOver={(e) => e.currentTarget.style.backgroundColor = "#f1f5f9"}
-                              onMouseOut={(e) => e.currentTarget.style.backgroundColor = "transparent"}
-                            >
-                              {c.code} - {c.name}
-                            </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                </div>
-                
-                <div style={{ display: "flex", justifyContent: "flex-end", gap: "1rem", marginTop: "2rem" }}>
-                  <button type="button" onClick={() => setSelectedDocument(null)} className="secondary-btn" disabled={isApproving}>Cancel</button>
-                  <button type="submit" className="success-btn" disabled={isApproving}>{isApproving ? "Approving..." : "Approve & Send to Accountant"}</button>
-                </div>
-              </form>
-            ) : (
-              <div>
-                <div style={{ display: "flex", gap: "1rem", marginBottom: "1.5rem" }}><span className="badge">{selectedDocument.status}</span></div>
-                <table style={{ width: "100%", textAlign: "left", lineHeight: "2" }}>
-                  <tbody>
-                    <tr><th style={{ width: "150px" }}>Vendor:</th><td>{selectedDocument.extractedVendor || "-"}</td></tr>
-                    <tr><th>Date:</th><td>{selectedDocument.extractedDate || "-"}</td></tr>
-                    <tr><th>Total:</th><td>{selectedDocument.extractedTotal ? `$${selectedDocument.extractedTotal}` : "-"}</td></tr>
-                    <tr><th>Tax:</th><td>{selectedDocument.extractedTax ? `$${selectedDocument.extractedTax}` : "-"}</td></tr>
-                    <tr><th>Category (COA):</th><td>{selectedDocument.mappedAccountCode ? `${selectedDocument.mappedAccountCode} - ${selectedDocument.mappedAccountName}` : "-"}</td></tr>
-                  </tbody>
-                </table>
-                <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "2rem" }}>
-                  <button onClick={() => setSelectedDocument(null)} className="secondary-btn">Close</button>
-                </div>
+            {isChatOpen && (
+              <div style={{ flex: "0 0 40%", display: "flex", flexDirection: "column", minHeight: "0" }}>
+                <ChatAssistant 
+                  documentId={selectedDocument.documentId} 
+                  userId={selectedDocument.userId}
+                  accountantId={selectedDocument.accountantId || ""}
+                />
               </div>
             )}
           </div>
