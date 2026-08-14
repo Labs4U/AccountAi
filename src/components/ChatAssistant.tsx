@@ -231,9 +231,11 @@ export default function ChatAssistant({ viewerRole, accountantId, customerId, do
             style={msg.role === 'user' ? { whiteSpace: 'pre-wrap' } : {}}
           >
             {msg.role === 'agent' ? (
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                {msg.content}
-              </ReactMarkdown>
+              <div className="markdown-body">
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                  {msg.content}
+                </ReactMarkdown>
+              </div>
             ) : (
               msg.content
             )}

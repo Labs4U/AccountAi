@@ -33,6 +33,16 @@ export default function AccountantDashboard() {
   // --- CHAT STATE ---
   const [accountantSub, setAccountantSub] = useState<string>("");
 
+  // --- MOBILE RESPONSIVE STATE ---
+  const [isMobile, setIsMobile] = useState(() => window.innerWidth <= 900);
+  const [isMobileChatOpen, setIsMobileChatOpen] = useState(false);
+
+  useEffect(() => {
+    const handleResize = () => setIsMobile(window.innerWidth <= 900);
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
   const [activeTab, setActiveTab] = useState<"triage" | "setup">("triage");
   const [accountantProfile, setAccountantProfile] = useState({
     name: "",
@@ -366,9 +376,9 @@ export default function AccountantDashboard() {
   );
 
   return (
-    <div style={{ display: "flex", gap: "2rem", width: "100%", alignItems: "flex-start", height: "calc(100vh - 80px)", padding: "1.5rem 2rem", boxSizing: "border-box", backgroundColor: "#f8fafc" }}>
+    <div className="dashboard-layout">
       {/* LEFT SIDE: Main Dashboard (65%) */}
-      <main className="content" style={{ flex: "1 1 65%", display: "flex", flexDirection: "column", gap: "1.5rem", overflowY: "auto" }}>
+      <main className="content dashboard-main">
         {/* NAV TABS */}
         <nav className="nav-tabs" style={{ display: "flex", gap: "1rem", borderBottom: "2px solid #e2e8f0", marginBottom: "1rem", paddingBottom: "0.5rem" }}>
           <button
@@ -454,9 +464,9 @@ export default function AccountantDashboard() {
             </div>
 
             {/* TABLE SECTION (Clickable Rows) */}
-            <div style={{ flex: 1, overflowY: "auto", borderRadius: "8px", border: "1px solid #e2e8f0", backgroundColor: "white", position: "relative", boxShadow: "0 1px 3px rgba(0,0,0,0.1)" }}>
-              <table style={{ width: "100%", textAlign: "left", borderCollapse: "collapse" }}>
-                <thead style={{ position: "sticky", top: 0, backgroundColor: "#f8fafc", zIndex: 10, boxShadow: "0 2px 4px rgba(0,0,0,0.05)" }}>
+            <div className="table-scroll-wrapper">
+              <table>
+                <thead>
                   <tr>
                     <SortableHeader label="Company" sortKey="Company" />
                     <SortableHeader label="Vendor" sortKey="extractedVendor" />
@@ -721,8 +731,8 @@ export default function AccountantDashboard() {
         )}
       </main>
 
-      {/* RIGHT SIDE: Chat Assistant (35%, sticky) */}
-      <aside style={{ flex: "1 1 35%", position: "sticky", top: "2rem", height: "fit-content", maxHeight: "calc(100vh - 5rem)" }}>
+      {/* RIGHT SIDE: Chat Assistant — desktop sidebar (hidden on mobile via CSS) */}
+      <aside className="dashboard-sidebar">
         <ChatAssistant
           viewerRole="ACCOUNTANT"
           accountantId={accountantSub}
@@ -730,6 +740,41 @@ export default function AccountantDashboard() {
           documentId={selectedDocument ? selectedDocument.documentId : 'dashboard_general'}
         />
       </aside>
+
+      {/* Mobile FAB */}
+      {isMobile && !isMobileChatOpen && (
+        <button
+          className="chat-fab"
+          onClick={() => setIsMobileChatOpen(true)}
+          aria-label="Open AI Assistant"
+        >
+          🤖
+        </button>
+      )}
+
+      {/* Mobile full-screen chat modal */}
+      {isMobile && isMobileChatOpen && (
+        <div className="mobile-chat-modal" role="dialog" aria-modal="true" aria-label="AI Assistant">
+          <div className="mobile-chat-modal-header">
+            <p className="mobile-chat-modal-title">🤖 Document Assistant</p>
+            <button
+              className="mobile-chat-modal-close"
+              onClick={() => setIsMobileChatOpen(false)}
+              aria-label="Close chat"
+            >
+              ✕ Close
+            </button>
+          </div>
+          <div className="mobile-chat-modal-body">
+            <ChatAssistant
+              viewerRole="ACCOUNTANT"
+              accountantId={accountantSub}
+              customerId={selectedDocument ? selectedDocument.userId : 'GLOBAL'}
+              documentId={selectedDocument ? selectedDocument.documentId : 'dashboard_general'}
+            />
+          </div>
+        </div>
+      )}
     </div>
   );
 }

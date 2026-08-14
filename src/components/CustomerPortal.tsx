@@ -86,6 +86,16 @@ export default function CustomerPortal() {
   // --- CHAT STATE ---
   const [isChatOpen, setIsChatOpen] = useState(false);
 
+  // --- MOBILE RESPONSIVE STATE ---
+  const [isMobile, setIsMobile] = useState(() => window.innerWidth <= 900);
+  const [isMobileChatOpen, setIsMobileChatOpen] = useState(false);
+
+  useEffect(() => {
+    const handleResize = () => setIsMobile(window.innerWidth <= 900);
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
   // --- REPORTS STATE ---
   const [reportFiles, setReportFiles] = useState<any[]>([]);
   const [isLoadingReports, setIsLoadingReports] = useState(false);
@@ -433,7 +443,7 @@ export default function CustomerPortal() {
   };
 
   return (
-    <main className="content" style={{ display: "flex", flexDirection: "column", height: "100%", overflowY: "auto" }}>
+    <main className="content dashboard-main" style={{ height: "auto", padding: "0 1.5rem 1.5rem" }}>
       <nav className="nav-tabs">
         <button className={activeTab === "upload" ? "active-tab-btn" : "tab-btn"} onClick={() => setActiveTab("upload")}>📤 Upload</button>
         <button className={activeTab === "library" ? "active-tab-btn" : "tab-btn"} onClick={() => setActiveTab("library")}>
@@ -619,7 +629,8 @@ export default function CustomerPortal() {
       {activeTab === "library" && (
         <div style={{ marginTop: "2rem" }}>
           <h2>My Document History</h2>
-          <table className="table" style={{ width: "100%", textAlign: "left", marginTop: "1rem" }}>
+          <div className="table-scroll-wrapper" style={{ marginTop: "1rem" }}>
+          <table className="table" style={{ width: "100%", textAlign: "left" }}>
             <thead>
               <tr style={{ background: "#f5f5f5" }}>
                 <th>ID</th><th>Vendor</th><th>Date</th><th>Total</th><th>Category</th><th>Status</th>
@@ -651,6 +662,7 @@ export default function CustomerPortal() {
               ))}
             </tbody>
           </table>
+          </div>
         </div>
       )}
 
@@ -778,7 +790,7 @@ export default function CustomerPortal() {
             </div>
 
             {isChatOpen && (
-              <div style={{ flex: "0 0 40%", display: "flex", flexDirection: "column", minHeight: "0" }}>
+              <div style={{ flex: "0 0 40%", display: "flex", flexDirection: "column", minHeight: "0", overflow: "hidden" }}>
                 <ChatAssistant
                   viewerRole="CUSTOMER"
                   customerId={userSub}
@@ -787,6 +799,41 @@ export default function CustomerPortal() {
                 />
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* Mobile FAB */}
+      {isMobile && !isMobileChatOpen && (
+        <button
+          className="chat-fab"
+          onClick={() => setIsMobileChatOpen(true)}
+          aria-label="Open AI Assistant"
+        >
+          🤖
+        </button>
+      )}
+
+      {/* Mobile full-screen chat modal */}
+      {isMobile && isMobileChatOpen && (
+        <div className="mobile-chat-modal" role="dialog" aria-modal="true" aria-label="AI Assistant">
+          <div className="mobile-chat-modal-header">
+            <p className="mobile-chat-modal-title">🤖 Document Assistant</p>
+            <button
+              className="mobile-chat-modal-close"
+              onClick={() => setIsMobileChatOpen(false)}
+              aria-label="Close chat"
+            >
+              ✕ Close
+            </button>
+          </div>
+          <div className="mobile-chat-modal-body">
+            <ChatAssistant
+              viewerRole="CUSTOMER"
+              customerId={userSub}
+              accountantId={selectedAccountantSub || 'GLOBAL'}
+              documentId={selectedDocument?.documentId || 'dashboard_general'}
+            />
           </div>
         </div>
       )}
