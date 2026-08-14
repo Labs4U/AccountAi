@@ -685,10 +685,18 @@ export default function CustomerPortal() {
                     const newStatus = (selectedDocument.aiConfidenceScore ?? 100) < 90 || !selectedDocument.isMathValid ? "CUSTOMER_APPROVED_FLAGGED" : "CUSTOMER_APPROVED_CLEAN";
 
                     await client.models.DocumentRecord.update({
-                      userId: selectedDocument.userId, documentId: selectedDocument.documentId, status: newStatus, companyName: companyName,
-                      extractedVendor: editForm.vendorName, extractedTotal: editForm.total ? parseFloat(editForm.total) : null,
-                      extractedTax: editForm.tax ? parseFloat(editForm.tax) : null, extractedDate: editForm.date || null,
-                      mappedAccountCode: newCoaCode || selectedDocument.mappedAccountCode, mappedAccountName: newCoaName || selectedDocument.mappedAccountName, accountantNote: null 
+                      userId: selectedDocument.userId, 
+                      documentId: selectedDocument.documentId, 
+                      status: newStatus,
+                      companyName: companyName,
+                      companyTrn: companyTrn,
+                      extractedVendor: editForm.vendorName, 
+                      extractedTotal: editForm.total ? parseFloat(editForm.total) : null,
+                      extractedTax: editForm.tax ? parseFloat(editForm.tax) : null, 
+                      extractedDate: editForm.date || null,
+                      mappedAccountCode: newCoaCode || selectedDocument.mappedAccountCode, 
+                      mappedAccountName: newCoaName || selectedDocument.mappedAccountName, 
+                      accountantNote: null 
                     });
                     setSelectedDocument(null);
                     setIsChatOpen(false);
