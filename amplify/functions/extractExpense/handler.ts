@@ -55,6 +55,7 @@ export const handler: Handler<ExtractionPayload> = async (event) => {
     let userCoaList: any[] = [];
     let userCompanyName: string | null = null;
     let userCompanyTrn: string | null = null;
+    let userAccountantId: string | null = null; // 🟢 NEW: Hold the accountant ID
 
     try {
       const getQuery = `
@@ -63,17 +64,18 @@ export const handler: Handler<ExtractionPayload> = async (event) => {
             chartOfAccounts
             companyName
             companyTrn
+            accountantId   # 🟢 NEW: Request it from the database
           }
         }
       `;
       
-      // Attempt A: Fetch the specific customer's profile
-      const configRes = await executeGraphQL(getQuery, { userId, documentId: "CONFIG" });
+      const configRes = await executeGraphQL(getQuery, { userId, documentId: "CUST" });
       const configRecord = configRes?.getDocumentRecord;
       
       if (configRecord) {
         userCompanyName = configRecord.companyName || null;
         userCompanyTrn = configRecord.companyTrn || null;
+        userAccountantId = configRecord.accountantId || null; // 🟢 NEW: Extract it
 
         if (configRecord.chartOfAccounts) {
           userCoaList = typeof configRecord.chartOfAccounts === 'string' 
@@ -194,6 +196,7 @@ export const handler: Handler<ExtractionPayload> = async (event) => {
         updateDocumentRecord(input: $input) {
           userId
           documentId
+          accountantId
           companyName
           companyTrn
           recordType
@@ -222,6 +225,7 @@ export const handler: Handler<ExtractionPayload> = async (event) => {
       input: {
         userId: userId,
         documentId: documentId,
+        accountantId: userAccountantId,
         companyName: userCompanyName, // 🟢 Stamp Company Name
         companyTrn: userCompanyTrn,   // 🟢 Stamp Company TRN
         extractedVendor: vendorName,

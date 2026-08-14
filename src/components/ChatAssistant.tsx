@@ -1,8 +1,11 @@
 import { useState, useRef, useEffect } from 'react'
-import { fetchAuthSession } from 'aws-amplify/auth'
+import { generateClient } from 'aws-amplify/data'
+import type { Schema } from '../../amplify/data/resource'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import './ChatAssistant.css'
+
+const client = generateClient<Schema>()
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -12,11 +15,38 @@ interface Message {
 }
 
 interface ChatAssistantProps {
-  documentId: string
-  userId: string
-  accountantId: string
+  viewerRole: 'ACCOUNTANT' | 'CUSTOMER'
+  accountantId?: string  // The assigned accountant
+  customerId?: string    // The document owner
+  documentId?: string    // The specific document being viewed
   onClose?: () => void
 }
+
+/**
+ * ChatAssistant - Multi-Tenant Financial Compliance AI
+ *
+ * A React component that provides an AI-powered document analysis interface
+ * with multi-tenant isolation for financial compliance workflows.
+ *
+ * Props:
+ * - documentId: The document being analyzed (used for MCP tool filtering)
+ * - userId: The customer/user ID (document owner, used for data isolation)
+ * - accountantId: The accountant's Cognito SUB (tenant ID for routing & access control)
+ * - onClose: Optional callback when assistant is closed
+ *
+ * Context Injection:
+ * All three IDs are passed to the Bedrock Agent for:
+ * 1. Multi-tenant isolation at API gateway
+ * 2. MCP tool access control and filtering
+ * 3. DynamoDB query filtering via GSIs
+ *
+ * Features:
+ * - Streaming SSE responses with thinking block stripping
+ * - Suggested prompts for common compliance questions
+ * - Voice input support (with microphone fallback)
+ * - Markdown rendering with financial compliance context
+ * - Real-time thinking indicator with status feedback
+ */
 
 // ── Suggested prompts ─────────────────────────────────────────────────────────
 
@@ -27,83 +57,15 @@ const SUGGESTED_PROMPTS = [
   'Flag any potential compliance issues',
 ] as const
 
-// ── Environment config ────────────────────────────────────────────────────────
-
-const GATEWAY_URL = import.meta.env.VITE_BEDROCK_AGENT_GATEWAY_URL || '/api/bedrock/invoke'
-const IS_LOCAL = !import.meta.env.VITE_BEDROCK_AGENT_GATEWAY_URL
-
-// ── Auth helper ───────────────────────────────────────────────────────────────
-
-async function getCognitoToken(): Promise<string | null> {
-  if (IS_LOCAL) return null
-  try {
-    const session = await fetchAuthSession()
-    return session.tokens?.accessToken?.toString() ?? null
-  } catch {
-    return null
-  }
-}
-
-// ── SSE / JSON response parser ────────────────────────────────────────────────
-
-function parseAgentResponse(rawText: string): string {
-  try {
-    // 1. Unwrap the Lambda proxy wrapper
-    const outer = JSON.parse(rawText)
-
-    if (outer.statusCode && outer.statusCode >= 400) {
-      return `⚠️ API Error: ${outer.body}`
-    }
-
-    const bodyContent = outer.body ?? rawText
-
-    // 2. Parse SSE Stream
-    if (typeof bodyContent === 'string' && bodyContent.includes('data:')) {
-      let text = ''
-      for (const line of bodyContent.split('\n')) {
-        const trimmedLine = line.trim()
-        if (!trimmedLine.startsWith('data:')) continue
-
-        const chunk = trimmedLine.slice(5).trim()
-        if (!chunk || chunk === '[DONE]') continue
-
-        try {
-          const parsedChunk = JSON.parse(chunk)
-          text += parsedChunk?.event?.contentBlockDelta?.delta?.text ?? ''
-        } catch {
-          // Skip unparseable chunks
-        }
-      }
-      if (text) {
-        // Strip out the internal <thinking> block
-        return text.replace(/<thinking>[\s\S]*?<\/thinking>\s*/g, '').trim()
-      }
-    }
-
-    // 3. Parse Flat JSON
-    const candidate = typeof bodyContent === 'string' ? JSON.parse(bodyContent) : bodyContent
-    if (candidate?.error || candidate?.errorMessage) {
-      return `⚠️ Agent error: ${candidate.error ?? candidate.errorMessage}`
-    }
-    return (
-      candidate?.message ??
-      candidate?.response ??
-      candidate?.result ??
-      candidate?.content ??
-      rawText
-    )
-  } catch {
-    return rawText
-  }
-}
-
 // ── Component ─────────────────────────────────────────────────────────────────
 
-export default function ChatAssistant({ documentId, userId, accountantId }: ChatAssistantProps) {
+export default function ChatAssistant({ viewerRole, accountantId, customerId, documentId }: ChatAssistantProps) {
   const [messages, setMessages] = useState<Message[]>([
     {
       role: 'agent',
-      content: `👋 Hello! I'm the AI Document Assistant. I can help you analyze this document, answer questions about its contents, and identify potential issues or opportunities. What would you like to know?`,
+      content: viewerRole === 'ACCOUNTANT'
+        ? `👋 Hello! I'm your Financial Compliance Assistant. I can help you analyze client documents, check regulatory compliance, and calculate tax summaries. What would you like to know?`
+        : `👋 Hello! I'm your Document Assistant. I can help you understand your documents, check their status, and answer questions about your financial data. What would you like to know?`,
     },
   ])
   const [input, setInput] = useState('')
@@ -112,11 +74,12 @@ export default function ChatAssistant({ documentId, userId, accountantId }: Chat
   const mediaRecorderRef = useRef<MediaRecorder | null>(null)
   const audioChunksRef = useRef<Blob[]>([])
   const [isRecording, setIsRecording] = useState(false)
-  const [isBrowserSupported, setIsBrowserSupported] = useState(true)
+  // isBrowserSupported tracks whether getUserMedia is available; set on mic error
+  const [, setIsBrowserSupported] = useState(true)
 
   // Generate a fresh session ID scoped to this document, user, and accountant
   // Format: doc_session_{accountantId}_{userId}_{documentId}
-  const [sessionId] = useState(() => `doc_session_${accountantId}_${userId}_${documentId}`)
+  const [sessionId] = useState(() => `doc_session_${viewerRole}_${accountantId ?? 'GLOBAL'}_${customerId ?? 'GLOBAL'}_${documentId ?? 'dashboard_general'}`)
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -131,43 +94,47 @@ export default function ChatAssistant({ documentId, userId, accountantId }: Chat
     setInput('')
     setThinking(true)
 
-    // Enrich prompt with full multi-tenant context
-    const enrichedPrompt = `${trimmed}\n\n[CONTEXT: Accountant ${accountantId} is analyzing document ${documentId} for customer ${userId}. Use available tools to fetch relevant data before responding. Focus on financial compliance and tax implications.]`
-
     try {
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' }
-
-      if (IS_LOCAL) {
-        headers['X-Local-Mode'] = 'true'
-      } else {
-        const token = await getCognitoToken()
-        if (token) headers['Authorization'] = `Bearer ${token}`
-      }
-
-      const response = await fetch(GATEWAY_URL, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({
-          prompt: enrichedPrompt,
-          sessionId,
-          documentId,
-          userId,
-          accountantId,
-          actor: accountantId,
-        }),
+      const response = await client.mutations.chatWithAgent({
+        prompt: trimmed,
+        sessionId,
+        accountantId: accountantId || 'GLOBAL',
+        customerId: customerId || 'GLOBAL',
+        documentId: documentId || 'dashboard_general',
       })
 
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${await response.text()}`)
+      if (response.errors && response.errors.length > 0) {
+        console.error('chatWithAgent errors:', response.errors)
+        throw new Error(response.errors[0].message)
       }
 
-      const replyText = parseAgentResponse(await response.text())
+      let replyText = response.data ?? ''
+
+      // Safety net: if Lambda still returned raw SSE (during sandbox restarts),
+      // extract the text client-side so the user never sees raw data: lines.
+      if (replyText.includes('data:') && replyText.includes('"contentBlockDelta"')) {
+        let extracted = ''
+        for (const line of replyText.split('\n')) {
+          const t = line.trim()
+          if (!t.startsWith('data:')) continue
+          const chunk = t.slice(5).trim()
+          if (!chunk || chunk === '[DONE]') continue
+          try {
+            const p = JSON.parse(chunk)
+            extracted += p?.event?.contentBlockDelta?.delta?.text ?? ''
+          } catch { /* skip */ }
+        }
+        replyText = extracted || replyText
+      }
+
+      // Strip any residual <thinking> blocks
+      replyText = replyText.replace(/<thinking>[\s\S]*?<\/thinking>\s*/g, '').trim()
 
       setMessages((prev) => [
         ...prev,
         {
           role: 'agent',
-          content: replyText.trim() || 'Received an empty response from the assistant.',
+          content: replyText || 'Received an empty response from the assistant.',
         },
       ])
     } catch (error) {
@@ -176,9 +143,7 @@ export default function ChatAssistant({ documentId, userId, accountantId }: Chat
         ...prev,
         {
           role: 'agent',
-          content: IS_LOCAL
-            ? '⚠️ Unable to reach Bedrock Agent. Make sure your agent gateway is running.'
-            : '⚠️ Unable to connect to the Document Assistant. Please try again.',
+          content: '⚠️ Unable to connect to the Financial Compliance Assistant. Please try again.',
         },
       ])
     } finally {
@@ -195,7 +160,9 @@ export default function ChatAssistant({ documentId, userId, accountantId }: Chat
     setMessages([
       {
         role: 'agent',
-        content: `👋 Hello! I'm the AI Document Assistant. I can help you analyze this document, answer questions about its contents, and identify potential issues or opportunities. What would you like to know?`,
+        content: viewerRole === 'ACCOUNTANT'
+          ? `👋 Hello! I'm your Financial Compliance Assistant. I can help you analyze client documents, check regulatory compliance, and calculate tax summaries. What would you like to know?`
+          : `👋 Hello! I'm your Document Assistant. I can help you understand your documents, check their status, and answer questions about your financial data. What would you like to know?`,
       },
     ])
     setInput('')
@@ -278,6 +245,7 @@ export default function ChatAssistant({ documentId, userId, accountantId }: Chat
             <span className="da-dot" />
             <span className="da-dot" />
             <span className="da-dot" />
+            <span className="da-thinking-text">Consulting documents...</span>
           </div>
         )}
 

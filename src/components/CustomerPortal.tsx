@@ -102,16 +102,26 @@ export default function CustomerPortal() {
     return isNameValid && isTypeValid && isTrnValid && isAddressValid && isAccountantSelected;
   }, [companyName, companyType, companyTrn, companyAddress, selectedAccountantSub]);
 
-  // 2. Fetch Accountants via Indexed Query
+  useEffect(() => {
+    isMounted.current = true;
+    return () => { isMounted.current = false; };
+  }, []);
+
+  // 2. Fetch Accountants
   useEffect(() => {
     const fetchAccountants = async () => {
       try {
-        // 🟢 CRITICAL FIX: Add { authMode: "apiKey" } so standard customers can read accountant profiles
-        const { data } = await client.models.DocumentRecord.listByDocumentId(
-          { documentId: "ACC" },
-          { authMode: "apiKey" } 
+        const { data, errors } = await client.models.DocumentRecord.list(
+          {
+            filter: { recordType: { eq: "PROFILE_ACC" } },
+            authMode: "apiKey",
+          }
         );
-        setAvailableAccountants(data || []);
+        if (errors && errors.length > 0) {
+          console.error("fetchAccountants errors:", errors);
+          return;
+        }
+        if (isMounted.current) setAvailableAccountants(data || []);
       } catch (err) {
         console.error("Failed to fetch accountants:", err);
       }
@@ -119,51 +129,116 @@ export default function CustomerPortal() {
     fetchAccountants();
   }, []);
 
+  // 3. 🟢 EVENT-DRIVEN STRATEGY: Initial Fetch + Pub/Sub Listeners
   useEffect(() => {
+    const subscriptions: any[] = [];
+
     const fetchSystemCOA = async () => {
       try {
         const { data } = await client.models.DocumentRecord.get(
           { userId: "SYSTEM", documentId: "DEFAULT_COA" },
           { authMode: "apiKey" } 
         );
-        if (data?.chartOfAccounts) {
+        if (data?.chartOfAccounts && isMounted.current) {
           setSystemCoaList(parseCOA(data.chartOfAccounts));
         }
       } catch (err) {
         console.error("Failed to fetch System COA, relying on local fallback.", err);
       }
     };
-    fetchSystemCOA();
 
-    fetchAuthSession().then(session => {
-      const sub = session.tokens?.idToken?.payload.sub?.toString();
-      if (sub) {
-        setUserSub(sub);
-        
-        const subscription = client.models.DocumentRecord.observeQuery({
-          filter: { userId: { eq: sub } }
-        }).subscribe({
-          next: (data) => {
-            const profile = data.items.find(d => d.documentId === "CUST");
-            const docs = data.items.filter(d => d.documentId !== "CUST");
+    const initializePortal = async () => {
+      try {
+        const session = await fetchAuthSession();
+        const sub = session.tokens?.idToken?.payload.sub?.toString();
+        if (!sub) return;
 
-            setDocuments([...docs].sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || "")));
+        if (isMounted.current) setUserSub(sub);
 
-            if (profile) {
-              setCustomerProfile(profile);
-              setCompanyName(profile.companyName || "");
-              setCompanyType(profile.companyType || "WLL");
-              setCompanyAddress(profile.companyAddress || "");
-              setCompanyTrn(profile.companyTrn || "");
-              setSelectedAccountantSub(profile.accountantId || "");
-              setCoaList(parseCOA(profile.chartOfAccounts));
-            }
-          },
-          error: (err) => console.warn("AppSync Subscription error:", err)
+        // 1. Initial Secure Fetch (Uses User ID Partition Key securely)
+        const { data, errors } = await client.models.DocumentRecord.list({
+          filter: { userId: { eq: sub } },
+          limit: 1000
         });
-        return () => subscription.unsubscribe();
+
+        if (errors) {
+          console.error("Initial fetch errors:", errors);
+          return;
+        }
+
+        const profile = data.find(d => d.documentId === "CUST");
+        const docs = data.filter(d => d.documentId !== "CUST");
+
+        if (isMounted.current) {
+          setDocuments([...docs].sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || "")));
+          if (profile) {
+            setCustomerProfile(profile);
+            setCompanyName(profile.companyName || "");
+            setCompanyType(profile.companyType || "WLL");
+            setCompanyAddress(profile.companyAddress || "");
+            setCompanyTrn(profile.companyTrn || "");
+            setSelectedAccountantSub(profile.accountantId || "");
+            setCoaList(parseCOA(profile.chartOfAccounts));
+          }
+        }
+
+        // 2. Client-Side Pub/Sub Handlers (Replaces observeQuery)
+        const handleNewItem = (item: any) => {
+          if (!isMounted.current || item.userId !== sub) return;
+          if (item.documentId === "CUST") {
+            setCustomerProfile(item);
+            setCompanyName(item.companyName || "");
+            setCompanyType(item.companyType || "WLL");
+            setCompanyAddress(item.companyAddress || "");
+            setCompanyTrn(item.companyTrn || "");
+            setSelectedAccountantSub(item.accountantId || "");
+            setCoaList(parseCOA(item.chartOfAccounts));
+          } else {
+            setDocuments(prev => {
+              if (prev.some(d => d.documentId === item.documentId)) return prev;
+              return [item, ...prev].sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
+            });
+          }
+        };
+
+        const handleUpdateItem = (item: any) => {
+          if (!isMounted.current || item.userId !== sub) return;
+          if (item.documentId === "CUST") {
+            setCustomerProfile(item);
+            setCompanyName(item.companyName || "");
+            setCompanyType(item.companyType || "WLL");
+            setCompanyAddress(item.companyAddress || "");
+            setCompanyTrn(item.companyTrn || "");
+            setSelectedAccountantSub(item.accountantId || "");
+            setCoaList(parseCOA(item.chartOfAccounts));
+          } else {
+            setDocuments(prev => prev.map(d => d.documentId === item.documentId ? item : d).sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || "")));
+          }
+        };
+
+        const handleDeleteItem = (item: any) => {
+          if (!isMounted.current || item.userId !== sub) return;
+          if (item.documentId !== "CUST") {
+            setDocuments(prev => prev.filter(d => d.documentId !== item.documentId));
+          }
+        };
+
+        // 3. Attach Live Subscriptions
+        subscriptions.push(client.models.DocumentRecord.onCreate().subscribe({ next: handleNewItem }));
+        subscriptions.push(client.models.DocumentRecord.onUpdate().subscribe({ next: handleUpdateItem }));
+        subscriptions.push(client.models.DocumentRecord.onDelete().subscribe({ next: handleDeleteItem }));
+
+      } catch (err) {
+        console.error("Failed to initialize customer portal:", err);
       }
-    });
+    };
+
+    fetchSystemCOA();
+    initializePortal();
+
+    return () => {
+      subscriptions.forEach(sub => sub.unsubscribe());
+    };
   }, []);
 
   const { chartData, chartCategories } = useMemo(() => {
@@ -210,12 +285,12 @@ export default function CustomerPortal() {
       const userReports = result.items.filter(
         item => item.path.includes(userSub) && item.size && item.size > 0
       );
-      setReportFiles(userReports);
+      if (isMounted.current) setReportFiles(userReports);
     } catch (err) {
       console.error("Failed to fetch customer reports:", err);
-      setReportFiles([]);
+      if (isMounted.current) setReportFiles([]);
     } finally {
-      setIsLoadingReports(false);
+      if (isMounted.current) setIsLoadingReports(false);
     }
   };
 
@@ -223,14 +298,7 @@ export default function CustomerPortal() {
     if (activeTab === "analytics" && userSub) {
       fetchReports();
     }
-  }, [activeTab, userSub]);
-
-  useEffect(() => {
-    if (activeTab === "analytics") {
-      fetchReports();
-    }
   }, [activeTab, userSub, companyName]);
-
 
   const handleSaveProfile = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -283,7 +351,7 @@ export default function CustomerPortal() {
       const errorMessage = err instanceof Error ? err.message : String(err);
       alert(`Failed to save profile: ${errorMessage}`);
     } finally {
-      setIsSavingProfile(false);
+      if (isMounted.current) setIsSavingProfile(false);
     }
   };
 
@@ -317,7 +385,8 @@ export default function CustomerPortal() {
         recordType: "DOCUMENT",
         status: "PROCESSING", 
         s3RawUri: `s3://account-ai-bh/${rawPath}`,
-        accountantId: customerProfile?.accountantId || undefined
+        accountantId: customerProfile?.accountantId || undefined,
+        companyName: companyName
       } as Schema["DocumentRecord"]["type"];
 
       if (isMounted.current) {
@@ -517,7 +586,6 @@ export default function CustomerPortal() {
               className="success-btn" 
               style={{ 
                 marginTop: "2rem",
-                // 🟢 CRITICAL FIX: Force the button to visually fade out and show a "stop" cursor when disabled
                 opacity: (!isFormValid || isSavingProfile) ? 0.5 : 1,
                 cursor: (!isFormValid || isSavingProfile) ? "not-allowed" : "pointer"
               }} 
@@ -617,7 +685,7 @@ export default function CustomerPortal() {
                     const newStatus = (selectedDocument.aiConfidenceScore ?? 100) < 90 || !selectedDocument.isMathValid ? "CUSTOMER_APPROVED_FLAGGED" : "CUSTOMER_APPROVED_CLEAN";
 
                     await client.models.DocumentRecord.update({
-                      userId: selectedDocument.userId, documentId: selectedDocument.documentId, status: newStatus, 
+                      userId: selectedDocument.userId, documentId: selectedDocument.documentId, status: newStatus, companyName: companyName,
                       extractedVendor: editForm.vendorName, extractedTotal: editForm.total ? parseFloat(editForm.total) : null,
                       extractedTax: editForm.tax ? parseFloat(editForm.tax) : null, extractedDate: editForm.date || null,
                       mappedAccountCode: newCoaCode || selectedDocument.mappedAccountCode, mappedAccountName: newCoaName || selectedDocument.mappedAccountName, accountantNote: null 
@@ -703,10 +771,11 @@ export default function CustomerPortal() {
 
             {isChatOpen && (
               <div style={{ flex: "0 0 40%", display: "flex", flexDirection: "column", minHeight: "0" }}>
-                <ChatAssistant 
-                  documentId={selectedDocument.documentId} 
-                  userId={selectedDocument.userId}
-                  accountantId={selectedDocument.accountantId || ""}
+                <ChatAssistant
+                  viewerRole="CUSTOMER"
+                  customerId={userSub}
+                  accountantId={selectedDocument.accountantId || 'GLOBAL'}
+                  documentId={selectedDocument.documentId}
                 />
               </div>
             )}

@@ -4,6 +4,7 @@ import { data } from './data/resource';
 import { classifyDocument } from './functions/classifyDocument/resource';
 import { extractExpense } from './functions/extractExpense/resource';
 import { generateReports } from './functions/generateReports/resource';
+import { chatAgent } from './functions/chatAgent/resource';
 
 import * as sfn from 'aws-cdk-lib/aws-stepfunctions';
 import * as tasks from 'aws-cdk-lib/aws-stepfunctions-tasks';
@@ -23,7 +24,8 @@ const backend = defineBackend({
   data,
   classifyDocument,
   extractExpense,
-  generateReports
+  generateReports,
+  chatAgent,
 });
 
 const workflowStack = backend.createStack('DocumentProcessingWorkflow');
@@ -203,3 +205,22 @@ const monthlyCronRule = new events.Rule(workflowStack, 'MonthlyReportsCronRule',
 });
 
 monthlyCronRule.addTarget(new targets.LambdaFunction(reportsLambda));
+
+// =======================================================================
+// 7. BEDROCK AGENT CHAT FUNCTION
+// =======================================================================
+const chatAgentLambda = backend.chatAgent.resources.lambda as lambda.Function;
+
+chatAgentLambda.addToRolePolicy(
+  new iam.PolicyStatement({
+    actions: [
+      'bedrock-agentcore:InvokeAgentRuntime',
+      'bedrock-agentcore:InvokeAgentRuntimeForUser',
+    ],
+    resources: ['*'],
+  })
+);
+
+chatAgentLambda.addEnvironment(
+  'AGENT_RUNTIME_ARN',
+'arn:aws:bedrock-agentcore:us-east-1:559846026818:runtime/AccountAgents_AccountAg-7qdHnrEe5C');

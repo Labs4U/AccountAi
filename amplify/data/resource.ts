@@ -1,5 +1,6 @@
 import { type ClientSchema, a, defineData } from '@aws-amplify/backend';
 import { generateReports } from '../functions/generateReports/resource'; // 🟢 Added import for the Lambda
+import { chatAgent } from '../functions/chatAgent/resource';
 
 const schema = a.schema({
   DocumentRecord: a
@@ -54,14 +55,16 @@ const schema = a.schema({
     })
     .identifier(['userId', 'documentId'])
     .secondaryIndexes((index) => [
-      index('status').queryField('listByStatus'),
-      index('mappedAccountCode').queryField('listByAccountCode'),
+      index('accountantId').sortKeys(['status']).queryField('listByAccountantAndStatus'),
       
-      // 🟢 NEW: Allows Customers to fetch all Accountant profiles without scanning the whole table
-      index('documentId').queryField('listByDocumentId'),
+      // 2. Accountant + Company: Optimized for all "Company Name" queries
+      index('accountantId').sortKeys(['companyName']).queryField('listByAccountantAndCompany'),
       
-      // 🟢 NEW: Allows Accountants to instantly fetch their assigned documents, optionally sorted by status
-      index('accountantId').sortKeys(['status']).queryField('listByAccountantAndStatus')
+      // 3. Accountant + Vendor: Optimized for all "Vendor Name" queries
+      index('accountantId').sortKeys(['extractedVendor']).queryField('listByAccountantAndVendor'),
+      
+      // 4. Accountant + TRN: Optimized for high-precision audit queries
+      index('accountantId').sortKeys(['vendorTRN']).queryField('listByAccountantAndTRN')
     ])
     .authorization((allow) => [
       // Rule 1: The Customer has full CRUD access to their own records
@@ -83,6 +86,19 @@ const schema = a.schema({
     .returns(a.json())
     .authorization((allow) => [allow.authenticated()])
     .handler(a.handler.function(generateReports)),
+
+  chatWithAgent: a
+    .mutation()
+    .arguments({
+      prompt: a.string().required(),
+      sessionId: a.string().required(),
+      accountantId: a.string(),
+      customerId: a.string(),
+      documentId: a.string(),
+    })
+    .returns(a.string())
+    .authorization((allow) => [allow.authenticated()])
+    .handler(a.handler.function(chatAgent)),
 });
 
 export type Schema = ClientSchema<typeof schema>;

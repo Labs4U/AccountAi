@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState, useMemo, useRef } from "react";
 import type { Schema } from "../../amplify/data/resource";
 import { generateClient } from "aws-amplify/data";
 import { getUrl, list } from "aws-amplify/storage";
@@ -42,78 +42,110 @@ export default function AccountantDashboard() {
   });
   const [isSavingProfile, setIsSavingProfile] = useState(false);
 
-  const fetchProfiles = async () => {
+  // Use a ref to prevent state updates on unmounted component
+  const isMounted = useRef(true);
+  useEffect(() => {
+    isMounted.current = true;
+    return () => { isMounted.current = false; };
+  }, []);
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // EVENT-DRIVEN STRATEGY: Initial GSI Load + Subscriptions (No Polling)
+  // ─────────────────────────────────────────────────────────────────────────────
+  
+  const fetchProfiles = async (sub: string) => {
     try {
-      const { data } = await client.models.DocumentRecord.listByDocumentId({
-        documentId: "CUST"
-      });
+      const { data, errors } = await client.models.DocumentRecord.listByAccountantAndCompany(
+        { accountantId: sub },
+        { limit: 500 }
+      );
+
+      if (errors) {
+        console.error("GSI Error (Profiles):", errors);
+        return;
+      }
+
       const mapping: Record<string, string> = {};
-      data.forEach(profile => {
-        mapping[profile.userId] = profile.companyName || "Unknown Company";
+      (data ?? []).forEach((profile) => {
+        if (profile.companyName) {
+          mapping[profile.userId] = profile.companyName;
+        }
       });
-      setCompanyMap(mapping);
-    } catch (err) {
+      if (isMounted.current) setCompanyMap(mapping);
+    } catch (err: any) {
       console.error("Failed to fetch company profiles", err);
     }
   };
 
   useEffect(() => {
-    fetchProfiles();
     setIsLoading(true);
+    const subscriptions: any[] = [];
     
-    const getAccountantSubAndSubscribe = async () => {
+    const initializeDashboard = async () => {
       try {
         const session = await fetchAuthSession();
         const sub = session.tokens?.idToken?.payload.sub?.toString();
-        if (sub) {
-          setAccountantSub(sub);
-          
-          const subscription = client.models.DocumentRecord.observeQuery({
-            filter: { accountantId: { eq: sub } }
-          }).subscribe({
-            next: (data: any) => {
-              // 🟢 BULLETPROOF FILTER: Only accept records where the ID starts with "doc-"
-              // This instantly drops any "CUST", "ACC", or "CONFIG" ghost rows regardless of their recordType.
-              const accountantDocs = data.items.filter((doc: any) => 
-                doc.documentId && doc.documentId.startsWith("doc-")
-              );
-              
-              setDocuments(accountantDocs);
-              setIsLoading(false);
-            },
-            error: (err: any) => {
-              console.error("Accountant subscription error:", err);
-              setIsLoading(false);
-            }
-          });
-          
-          return subscription;
-        }
-      } catch (err) {
-        console.error("Failed to get accountant SUB:", err);
-        setIsLoading(false);
-      }
-    };
-    
-    let subscription: any;
-    getAccountantSubAndSubscribe().then(sub => {
-      subscription = sub;
-    });
-    
-    return () => subscription?.unsubscribe();
-  }, []);
+        if (!sub) return;
 
-  useEffect(() => {
-    const getAccountantSub = async () => {
-      try {
-        const session = await fetchAuthSession();
-        const sub = session.tokens?.idToken?.payload.sub?.toString();
-        if (sub) setAccountantSub(sub);
+        if (isMounted.current) setAccountantSub(sub);
+
+        // 1. Initial Secure GSI Fetch
+        await fetchProfiles(sub);
+        
+        const { data, errors } = await client.models.DocumentRecord.listByAccountantAndStatus(
+          { accountantId: sub },
+          { limit: 1000 }
+        );
+
+        if (errors) throw new Error(errors[0].message);
+
+        const accountantDocs = (data ?? []).filter((doc: any) =>
+          doc.documentId && doc.documentId.startsWith("doc-")
+        );
+        
+        if (isMounted.current) {
+          setDocuments(accountantDocs);
+          setIsLoading(false);
+        }
+
+        // 2. Client-Side Event Handlers
+        const handleNewItem = (item: any) => {
+          if (!isMounted.current) return;
+          if (item.accountantId === sub && item.documentId?.startsWith("doc-")) {
+            setDocuments(prev => prev.some(d => d.documentId === item.documentId) ? prev : [item, ...prev]);
+          }
+        };
+
+        const handleUpdateItem = (item: any) => {
+          if (!isMounted.current) return;
+          if (item.accountantId === sub && item.documentId?.startsWith("doc-")) {
+            setDocuments(prev => prev.map(d => d.documentId === item.documentId ? item : d));
+          }
+        };
+
+        const handleDeleteItem = (item: any) => {
+          if (!isMounted.current) return;
+          if (item.accountantId === sub && item.documentId?.startsWith("doc-")) {
+            setDocuments(prev => prev.filter(d => d.documentId !== item.documentId));
+          }
+        };
+
+        // 3. Attach Live Subscriptions
+        subscriptions.push(client.models.DocumentRecord.onCreate().subscribe({ next: handleNewItem }));
+        subscriptions.push(client.models.DocumentRecord.onUpdate().subscribe({ next: handleUpdateItem }));
+        subscriptions.push(client.models.DocumentRecord.onDelete().subscribe({ next: handleDeleteItem }));
+
       } catch (err) {
-        console.error("Failed to fetch accountant SUB:", err);
+        console.error("Failed to initialize dashboard:", err);
+        if (isMounted.current) setIsLoading(false);
       }
     };
-    getAccountantSub();
+
+    initializeDashboard();
+
+    return () => {
+      subscriptions.forEach(sub => sub.unsubscribe());
+    };
   }, []);
 
   useEffect(() => {
@@ -124,7 +156,7 @@ export default function AccountantDashboard() {
           userId: accountantSub,
           documentId: "ACC"
         });
-        if (data) {
+        if (data && isMounted.current) {
           setAccountantProfile({
             name: data.name || "",
             firmName: data.firmName || "",
@@ -150,7 +182,7 @@ export default function AccountantDashboard() {
       console.error("Failed to trigger lambda", err);
       alert("Failed to generate reports. Check console.");
     } finally {
-      setIsGenerating(false);
+      if (isMounted.current) setIsGenerating(false);
     }
   };
 
@@ -160,19 +192,19 @@ export default function AccountantDashboard() {
     setShowReportsModal(true);
     setReportLoading(true);
 
-    const prefix = userId 
-      ? `reports/${userId}_${companyName.replace(/[^a-zA-Z0-9_-]/g, "_")}/` 
+    const prefix = userId
+      ? `reports/${userId}_${companyName.replace(/[^a-zA-Z0-9_-]/g, "_")}/`
       : `reports/`;
 
     try {
       const result = await list({ path: prefix });
       const files = result.items.filter(item => item.size && item.size > 0);
-      setReportFiles(files);
+      if (isMounted.current) setReportFiles(files);
     } catch (err) {
       console.error("Failed to list S3 compliance reports:", err);
-      setReportFiles([]);
+      if (isMounted.current) setReportFiles([]);
     } finally {
-      setReportLoading(false);
+      if (isMounted.current) setReportLoading(false);
     }
   };
 
@@ -201,10 +233,10 @@ export default function AccountantDashboard() {
         documentId: "ACC"
       });
 
-      let response;
       const profilePayload = {
         userId: accountantSub,
         documentId: "ACC",
+        accountantId: accountantSub,
         recordType: "PROFILE_ACC",
         name: accountantProfile.name,
         firmName: accountantProfile.firmName,
@@ -212,31 +244,24 @@ export default function AccountantDashboard() {
         contactEmail: accountantProfile.contactEmail
       };
 
+      let response;
       if (!existingProfile?.data) {
-        console.log("📝 Creating new accountant profile...");
         response = await client.models.DocumentRecord.create(profilePayload);
       } else {
-        console.log("✏️ Updating existing accountant profile...");
         response = await client.models.DocumentRecord.update(profilePayload);
       }
 
       if (response?.errors && Array.isArray(response.errors) && response.errors.length > 0) {
-        console.error("❌ AppSync Mutation Failed - Errors:", response.errors);
-        const firstError = response.errors[0];
-        const errorMessage = firstError?.message || "Unknown GraphQL error";
-        alert(`⚠️ Profile Save Failed:\n\n${errorMessage}`);
-        return; 
+        alert(`⚠️ Profile Save Failed:\n\n${response.errors[0]?.message || "Unknown error"}`);
+        return;
       }
 
-      console.log("✅ Profile saved successfully to DynamoDB");
       alert("Profile saved successfully!");
-      
     } catch (err) {
-      console.error("❌ Failed to save profile - Exception:", err);
       const errorMessage = err instanceof Error ? err.message : String(err);
       alert(`Failed to save profile: ${errorMessage}`);
     } finally {
-      setIsSavingProfile(false);
+      if (isMounted.current) setIsSavingProfile(false);
     }
   };
 
@@ -249,6 +274,7 @@ export default function AccountantDashboard() {
       await client.models.DocumentRecord.update({
         userId: doc.userId,
         documentId: doc.documentId,
+        accountantId: accountantSub,
         status: "PENDING_CUSTOMER",
         accountantNote: rejectionNote
       });
@@ -265,6 +291,7 @@ export default function AccountantDashboard() {
       await client.models.DocumentRecord.update({
         userId: doc.userId,
         documentId: doc.documentId,
+        accountantId: accountantSub,
         status: "FINALIZED"
       });
       setSelectedDocument(null);
@@ -330,8 +357,8 @@ export default function AccountantDashboard() {
   const matchingUserId = Object.keys(companyMap).find(id => companyMap[id] === uniqueCompanies[0]);
 
   const SortableHeader = ({ label, sortKey }: { label: string, sortKey: string }) => (
-    <th 
-      onClick={() => handleSort(sortKey)} 
+    <th
+      onClick={() => handleSort(sortKey)}
       style={{ padding: "12px", borderBottom: "2px solid #e2e8f0", cursor: "pointer", userSelect: "none" }}
     >
       {label} {sortConfig?.key === sortKey ? (sortConfig.direction === 'ascending' ? '↑' : '↓') : '↕'}
@@ -344,14 +371,14 @@ export default function AccountantDashboard() {
       <main className="content" style={{ flex: "1 1 65%", display: "flex", flexDirection: "column", gap: "1.5rem", overflowY: "auto" }}>
         {/* NAV TABS */}
         <nav className="nav-tabs" style={{ display: "flex", gap: "1rem", borderBottom: "2px solid #e2e8f0", marginBottom: "1rem", paddingBottom: "0.5rem" }}>
-          <button 
-            onClick={() => setActiveTab("triage")} 
+          <button
+            onClick={() => setActiveTab("triage")}
             className={activeTab === "triage" ? "active-tab-btn" : "tab-btn"}
-            style={{ 
-              padding: "0.75rem 1.5rem", 
-              border: "none", 
-              background: "none", 
-              fontSize: "1rem", 
+            style={{
+              padding: "0.75rem 1.5rem",
+              border: "none",
+              background: "none",
+              fontSize: "1rem",
               fontWeight: activeTab === "triage" ? "700" : "500",
               color: activeTab === "triage" ? "#4f46e5" : "#64748b",
               cursor: "pointer",
@@ -361,14 +388,14 @@ export default function AccountantDashboard() {
           >
             📋 Triage
           </button>
-          <button 
-            onClick={() => setActiveTab("setup")} 
+          <button
+            onClick={() => setActiveTab("setup")}
             className={activeTab === "setup" ? "active-tab-btn" : "tab-btn"}
-            style={{ 
-              padding: "0.75rem 1.5rem", 
-              border: "none", 
-              background: "none", 
-              fontSize: "1rem", 
+            style={{
+              padding: "0.75rem 1.5rem",
+              border: "none",
+              background: "none",
+              fontSize: "1rem",
               fontWeight: activeTab === "setup" ? "700" : "500",
               color: activeTab === "setup" ? "#4f46e5" : "#64748b",
               cursor: "pointer",
@@ -389,15 +416,15 @@ export default function AccountantDashboard() {
               <p style={{ margin: "0 0 1rem 0", color: "#475569" }}>Click any row to review documents awaiting final COA validation and lock.</p>
 
               <div style={{ display: "flex", gap: "1rem", marginBottom: "1.5rem", flexWrap: "wrap" }}>
-                <button 
+                <button
                   onClick={handleTriggerReports}
                   disabled={isGenerating}
                   style={{ backgroundColor: "#0f172a", color: "white", padding: "0.5rem 1rem", borderRadius: "6px", cursor: isGenerating ? "not-allowed" : "pointer" }}
                 >
                   {isGenerating ? "⏳ Generating..." : "🧪 TEST: Trigger Report Generation"}
                 </button>
-                
-                <button 
+
+                <button
                   onClick={() => handleOpenReports(null, "All Global Reports")}
                   style={{ backgroundColor: "#475569", color: "white", padding: "0.5rem 1rem", borderRadius: "6px", cursor: "pointer" }}
                 >
@@ -406,9 +433,9 @@ export default function AccountantDashboard() {
               </div>
 
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1rem", gap: "1rem", flexWrap: "wrap" }}>
-                <input 
-                  type="text" 
-                  placeholder="🔍 Search by Company Name..." 
+                <input
+                  type="text"
+                  placeholder="🔍 Search by Company Name..."
                   value={searchCompany}
                   onChange={(e) => setSearchCompany(e.target.value)}
                   className="input"
@@ -416,7 +443,7 @@ export default function AccountantDashboard() {
                 />
 
                 {searchCompany && uniqueCompanies.length === 1 && matchingUserId && (
-                  <button 
+                  <button
                     onClick={() => handleOpenReports(matchingUserId, uniqueCompanies[0])}
                     style={{ backgroundColor: "#4f46e5", color: "white", padding: "0.6rem 1.2rem", border: "none", borderRadius: "6px", cursor: "pointer", fontWeight: "bold", whiteSpace: "nowrap" }}
                   >
@@ -440,10 +467,10 @@ export default function AccountantDashboard() {
                 </thead>
                 <tbody>
                   {sortedAndFilteredDocuments.map((doc) => (
-                    <tr 
-                      key={doc.documentId} 
+                    <tr
+                      key={doc.documentId}
                       onClick={() => { setSelectedDocument(doc); setIsRejecting(false); }}
-                      style={{ borderBottom: "1px solid #f1f5f9", cursor: "pointer", transition: "background-color 0.2s" }} 
+                      style={{ borderBottom: "1px solid #f1f5f9", cursor: "pointer", transition: "background-color 0.2s" }}
                       onMouseOver={(e) => e.currentTarget.style.backgroundColor = "#f1f5f9"}
                       onMouseOut={(e) => e.currentTarget.style.backgroundColor = "transparent"}
                     >
@@ -454,7 +481,7 @@ export default function AccountantDashboard() {
                       <td style={{ padding: "12px" }}>{doc.extractedDate}</td>
                       <td style={{ padding: "12px" }}>${doc.extractedTotal}</td>
                       <td style={{ padding: "12px" }}>
-                        <span className="badge" style={{ 
+                        <span className="badge" style={{
                           backgroundColor: doc.status === 'FINALIZED' ? '#dcfce7' : '#f3e8ff',
                           color: doc.status === 'FINALIZED' ? '#166534' : '#7e22ce',
                           padding: "4px 12px",
@@ -469,9 +496,14 @@ export default function AccountantDashboard() {
                   ))}
                 </tbody>
               </table>
-              {sortedAndFilteredDocuments.length === 0 && (
+              {sortedAndFilteredDocuments.length === 0 && !isLoading && (
                 <div style={{ textAlign: "center", padding: "3rem", color: "#64748b" }}>
                   <p>No documents found. Check filters or wait for customer submissions.</p>
+                </div>
+              )}
+              {isLoading && (
+                <div style={{ textAlign: "center", padding: "3rem", color: "#64748b" }}>
+                  <p>Loading documents...</p>
                 </div>
               )}
             </div>
@@ -552,7 +584,7 @@ export default function AccountantDashboard() {
             </div>
           </div>
         )}
-        {/* ... rest of modals remain the same ... */}
+
         {selectedDocument && (
           <div style={{
             position: "fixed", top: 0, left: 0, width: "100vw", height: "100vh",
@@ -571,8 +603,8 @@ export default function AccountantDashboard() {
                   <span className="badge" style={{ backgroundColor: "#9333ea", color: "white", fontSize: "0.8rem", padding: "6px 12px" }}>
                     {selectedDocument.status}
                   </span>
-                  <button 
-                    onClick={() => handleViewDocument(selectedDocument)} 
+                  <button
+                    onClick={() => handleViewDocument(selectedDocument)}
                     style={{ fontSize: "0.75rem", padding: "4px 8px", backgroundColor: "#f1f5f9", border: "1px solid #cbd5e1", borderRadius: "4px", cursor: "pointer" }}
                   >
                     👁️ View Original
@@ -592,15 +624,15 @@ export default function AccountantDashboard() {
               <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center", marginTop: "1rem", gap: "12px" }}>
                 {isRejecting ? (
                   <div style={{ display: "flex", gap: "8px", alignItems: "center", width: "100%" }}>
-                    <input 
-                      type="text" 
-                      placeholder="Reason for return..." 
+                    <input
+                      type="text"
+                      placeholder="Reason for return..."
                       value={rejectionNote}
                       onChange={(e) => setRejectionNote(e.target.value)}
                       className="input"
                       style={{ flex: 1 }}
                     />
-                    <button 
+                    <button
                       onClick={() => handleReturnToCustomer(selectedDocument)}
                       style={{ backgroundColor: "#ef4444", color: "white", padding: "10px 15px", border: "none", borderRadius: "6px", cursor: "pointer", fontWeight: "bold", whiteSpace: "nowrap" }}
                     >
@@ -610,15 +642,15 @@ export default function AccountantDashboard() {
                   </div>
                 ) : (
                   <>
-                    <button 
-                      onClick={() => setIsRejecting(true)} 
+                    <button
+                      onClick={() => setIsRejecting(true)}
                       style={{ backgroundColor: "#f59e0b", color: "white", padding: "10px 20px", border: "none", borderRadius: "6px", cursor: "pointer", fontWeight: "bold" }}
                     >
                       Request Info
                     </button>
                     {selectedDocument.status !== "FINALIZED" && (
-                      <button 
-                        onClick={() => handleApproveAndFinalize(selectedDocument)} 
+                      <button
+                        onClick={() => handleApproveAndFinalize(selectedDocument)}
                         style={{ backgroundColor: "#16a34a", color: "white", padding: "10px 20px", border: "none", borderRadius: "6px", cursor: "pointer", fontWeight: "bold" }}
                       >
                         Approve & Finalize
@@ -670,7 +702,7 @@ export default function AccountantDashboard() {
                           Path: {file.path}
                         </p>
                       </div>
-                      <button 
+                      <button
                         onClick={() => handleDownloadReportFile(file.path)}
                         style={{ backgroundColor: "#2563eb", color: "white", padding: "8px 14px", border: "none", borderRadius: "6px", cursor: "pointer", fontWeight: "bold", fontSize: "0.85rem" }}
                       >
@@ -691,10 +723,11 @@ export default function AccountantDashboard() {
 
       {/* RIGHT SIDE: Chat Assistant (35%, sticky) */}
       <aside style={{ flex: "1 1 35%", position: "sticky", top: "2rem", height: "fit-content", maxHeight: "calc(100vh - 5rem)" }}>
-        <ChatAssistant 
-          documentId={selectedDocument ? selectedDocument.documentId : "dashboard_general"} 
-          userId={accountantSub}
+        <ChatAssistant
+          viewerRole="ACCOUNTANT"
           accountantId={accountantSub}
+          customerId={selectedDocument ? selectedDocument.userId : 'GLOBAL'}
+          documentId={selectedDocument ? selectedDocument.documentId : 'dashboard_general'}
         />
       </aside>
     </div>
