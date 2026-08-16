@@ -117,53 +117,41 @@ function AuthenticatedApp({
 
   return (
     <div className="container">
-      <header
-        className="header"
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          marginBottom: "20px",
-        }}
-      >
-        <div>
-          <h1 style={{ margin: 0, fontSize: "1.5rem" }}>AccountAI Portal</h1>
-          <small style={{ color: "#666" }}>Enterprise Document Processing</small>
+      <header className="app-header">
+        <div style={{ display: "flex", alignItems: "center", gap: "0.75rem" }}>
+          <h1 style={{ margin: 0, fontSize: "1.25rem", fontWeight: 700, color: "var(--text-main)" }}>AccountAI Portal</h1>
+          <small style={{ color: "var(--text-muted)", fontSize: "0.85rem" }}>Enterprise Document Processing</small>
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: "1rem" }}>
-          <span className="user-badge" style={{ fontWeight: "bold" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "0.75rem", flexWrap: "wrap" }}>
+          <span className="user-badge">
             Role: {userRole ?? "…"} | {user?.signInDetails?.loginId ?? user?.username}
           </span>
-          {/* TEMPORARY DEBUG BUTTON — remove before production */}
           <button
             onClick={handleDebugToken}
             style={{
-              background: "#f0ad4e",
-              color: "#000",
-              border: "1px solid #d48d0a",
-              borderRadius: "4px",
-              padding: "0.3em 0.8em",
-              fontSize: "0.8rem",
-              cursor: "pointer",
+              background: "#f0ad4e", color: "#000",
+              border: "1px solid #d48d0a", borderRadius: "6px",
+              padding: "0.35rem 0.8rem", fontSize: "0.8rem", cursor: "pointer",
             }}
             title="Temporary debug tool — shows raw cognito:groups from JWT"
           >
             🔍 Debug Token
           </button>
-          <button className="secondary-btn" onClick={signOut}>
-            Sign Out
-          </button>
+          <button className="secondary-btn" onClick={signOut}>Sign Out</button>
         </div>
       </header>
 
-      {isLoading ? (
-        <div style={{ padding: "2rem", textAlign: "center" }}>
-          Loading workspace…
-        </div>
-      ) : userRole === "Admin" ? (
-        <AccountantDashboard />
-      ) : (
-        <CustomerPortal />
-      )}
+      <div className="dashboard-main">
+        {isLoading ? (
+          <div style={{ padding: "2rem", textAlign: "center", color: "var(--text-muted)" }}>
+            Loading workspace…
+          </div>
+        ) : userRole === "Admin" ? (
+          <AccountantDashboard />
+        ) : (
+          <CustomerPortal />
+        )}
+      </div>
     </div>
   );
 }

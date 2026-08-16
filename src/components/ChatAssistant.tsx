@@ -51,15 +51,15 @@ interface ChatAssistantProps {
 // ── Suggested prompts ─────────────────────────────────────────────────────────
 
 const SUGGESTED_PROMPTS = [
-  'What are the tax implications of this expense?',
-  'Is this document compliant with our policies?',
-  'Summarize the key financial details',
-  'Flag any potential compliance issues',
+  'Show me all pending documents.',
+  'Calculate the total tax summary across all clients.',
+  'Find all invoices from a specific vendor.',
+  'List all finalized documents.',
 ] as const
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
-export default function ChatAssistant({ viewerRole, accountantId, customerId, documentId }: ChatAssistantProps) {
+export default function ChatAssistant({ viewerRole, accountantId, customerId, documentId, onClose }: ChatAssistantProps) {
   const [messages, setMessages] = useState<Message[]>([
     {
       role: 'agent',
@@ -217,9 +217,31 @@ export default function ChatAssistant({ viewerRole, accountantId, customerId, do
             <p className="da-subtitle">Powered by Bedrock AI</p>
           </div>
         </div>
-        <button onClick={clearChat} className="da-clear-btn" type="button">
-          Clear
-        </button>
+        <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+          <button onClick={clearChat} className="da-clear-btn" type="button">
+            Clear
+          </button>
+          {onClose && (
+            <button
+              onClick={onClose}
+              type="button"
+              aria-label="Close chat"
+              style={{
+                background: "transparent",
+                border: "none",
+                fontSize: "1.5rem",
+                cursor: "pointer",
+                color: "#64748b",
+                lineHeight: 1,
+                padding: "2px 4px",
+                display: "flex",
+                alignItems: "center",
+              }}
+            >
+              ✕
+            </button>
+          )}
+        </div>
       </div>
 
       {/* ── Message list ── */}
@@ -231,10 +253,12 @@ export default function ChatAssistant({ viewerRole, accountantId, customerId, do
             style={msg.role === 'user' ? { whiteSpace: 'pre-wrap' } : {}}
           >
             {msg.role === 'agent' ? (
-              <div className="markdown-body">
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                  {msg.content}
-                </ReactMarkdown>
+              <div className="table-wrapper" style={{ border: "none", boxShadow: "none", borderRadius: 0, background: "transparent" }}>
+                <div className="markdown-body">
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                    {msg.content}
+                  </ReactMarkdown>
+                </div>
               </div>
             ) : (
               msg.content

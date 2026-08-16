@@ -1,16 +1,47 @@
+:root {
+  --bg-app: #f1f5f9;
+  --bg-surface: #ffffff;
+  --text-main: #0f172a;
+  --text-muted: #64748b;
+  --border: #e2e8f0;
+  --accent-primary: #2563eb;
+  --accent-hover: #1d4ed8;
+  --success: #10b981;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+  background-color: var(--bg-app);
+  color: var(--text-main);
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  font-size: 16px;
+}
+
 .container {
-  max-width: 1200px;
-  margin: 0 auto;
-  padding: 1.5rem;
-  font-family: system-ui, -apple-system, sans-serif;
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  width: 100%;
+  background-color: var(--bg-app);
+  box-sizing: border-box;
 }
 
 .header {
+  height: 70px;
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border);
+  padding: 0 2rem;
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding-bottom: 1rem;
-  border-bottom: 1px solid #e0e0e0;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  flex-shrink: 0;
+  box-sizing: border-box;
 }
 
 .user-badge {
@@ -25,28 +56,39 @@
 .nav-tabs {
   display: flex;
   gap: 0.5rem;
-  margin-top: 1rem;
-  border-bottom: 1px solid #e0e0e0;
+  border-bottom: 2px solid var(--border);
+  margin-bottom: 1.5rem;
+  flex-shrink: 0;
+  overflow-x: auto;
+  white-space: nowrap;
+  -webkit-overflow-scrolling: touch;
 }
 
 .tab-btn {
-  padding: 0.75rem 1.25rem;
+  background: transparent;
   border: none;
-  border-bottom: 2px solid transparent;
-  background-color: transparent;
-  cursor: pointer;
+  padding: 0.75rem 1.5rem;
+  font-size: 1rem;
   font-weight: 500;
-  color: #555;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: color 0.2s;
+}
+
+.tab-btn:hover {
+  color: var(--accent-primary);
 }
 
 .active-tab-btn {
-  padding: 0.75rem 1.25rem;
+  background: transparent;
   border: none;
-  border-bottom: 2px solid #1976d2;
-  background-color: transparent;
+  padding: 0.75rem 1.5rem;
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--accent-primary);
+  border-bottom: 3px solid var(--accent-primary);
   cursor: pointer;
-  font-weight: 700;
-  color: #1976d2;
+  margin-bottom: -2px;
 }
 
 .content {
@@ -112,11 +154,13 @@
 }
 
 .input {
-  padding: 0.6rem 1rem;
+  padding: 0.75rem 1rem;
   border-radius: 6px;
-  border: 1px solid #ccc;
-  font-size: 0.9rem;
+  border: 1px solid var(--border);
+  font-size: 1rem;
   flex: 1;
+  box-sizing: border-box;
+  font-family: inherit;
 }
 
 .table {
@@ -214,49 +258,124 @@
   font-size: 0.8rem;
 }
 
-/* Layout */
-.dashboard-layout {
+/* ── App Header ─────────────────────────────────────────────────────────────── */
+
+.app-header {
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border);
+  padding: 0.75rem 1.5rem;
   display: flex;
-  gap: 2rem;
-  height: calc(100vh - 80px);
-  overflow: hidden;
-  padding: 1.5rem 2rem;
+  justify-content: space-between;
+  align-items: center;
+  flex-shrink: 0;
+  flex-wrap: wrap;        /* long emails stack on mobile */
+  gap: 0.75rem;
+  width: 100%;
   box-sizing: border-box;
-  background-color: #f8fafc;
-  align-items: stretch;
+}
+
+/* ── Dashboard container ─────────────────────────────────────────────────────── */
+
+.dashboard-container {
+  height: calc(100vh - 70px);
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  padding: 1.25rem 1.5rem;
+  box-sizing: border-box;
+  overflow: hidden;
+}
+
+/* .dashboard-layout kept as alias for existing usages */
+.dashboard-layout {
+  height: calc(100vh - 70px);
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  padding: 1.25rem 1.5rem;
+  box-sizing: border-box;
+  overflow: hidden;
+  background-color: var(--bg-app);
 }
 
 .dashboard-main {
   flex: 1;
   display: flex;
   flex-direction: column;
-  gap: 1.5rem;
-  overflow-y: auto;
-  padding-bottom: 2rem;
-  min-width: 0;
+  overflow: hidden;
+  min-height: 0;
 }
 
-.dashboard-sidebar {
-  flex: 0 0 360px;
+
+/* ── Scrollable content frame — only this inner frame scrolls ────────────────── */
+
+.dashboard-content-frame {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+  padding: 0;
+}
+
+/* ── Analytics no-scroll layout ─────────────────────────────────────────────── */
+
+.analytics-wrapper {
+  display: flex;
+  flex-direction: row;
+  gap: 1.5rem;
+  height: 100%;
+  min-height: 0;
+  flex: 1;
+}
+
+.chart-card {
+  flex: 2;
+  background: var(--bg-surface);
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  padding: 1rem 1.5rem;
   display: flex;
   flex-direction: column;
-  position: sticky;
-  top: 0;
-  height: 100%;
-  min-width: 0;
+  box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05);
+  min-height: 0;
   overflow: hidden;
 }
 
-/* Scrollable table wrapper */
+.chart-container {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+}
+
+.reports-card {
+  flex: 1;
+  background: var(--bg-surface);
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  padding: 1rem 1.5rem;
+  overflow-y: auto;
+  box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05);
+  min-height: 0;
+}
+
+/* ── Table cards and scrollable wrappers ─────────────────────────────────────── */
+
+.table-card {
+  background: var(--bg-surface);
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  overflow: hidden;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+}
+
 .table-scroll-wrapper {
   display: block;
   overflow-x: auto;
   white-space: nowrap;
   -webkit-overflow-scrolling: touch;
   border-radius: 8px;
-  border: 1px solid #e2e8f0;
-  background: white;
-  box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+  border: 1px solid var(--border);
+  background: var(--bg-surface);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.05);
   flex: 1;
 }
 
@@ -275,7 +394,15 @@
   box-shadow: 0 2px 4px rgba(0,0,0,0.05);
 }
 
-/* Markdown table fix */
+/* .table-wrapper alias */
+.table-wrapper {
+  width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* ── Markdown table fix ──────────────────────────────────────────────────────── */
+
 .markdown-body table {
   display: block;
   overflow-x: auto;
@@ -302,57 +429,127 @@
   background: #f9fafb;
 }
 
-/* FAB + mobile modal — hidden on desktop */
+/* ── Global chat widget: FAB + floating panel ────────────────────────────────── */
+
 .chat-fab {
-  display: none;
+  position: fixed;
+  bottom: 30px;
+  right: 30px;
+  width: 65px;
+  height: 65px;
+  border-radius: 50%;
+  background: var(--accent-primary);
+  color: white;
+  border: none;
+  font-size: 30px;
+  cursor: pointer;
+  box-shadow: 0 10px 25px -5px rgba(37, 99, 235, 0.5);
+  z-index: 9998;
+  transition: transform 0.2s, box-shadow 0.2s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
-.mobile-chat-modal {
-  display: none;
+.chat-fab:hover {
+  transform: scale(1.05);
+  box-shadow: 0 14px 30px -5px rgba(37, 99, 235, 0.6);
 }
+
+.chat-fab:active {
+  transform: scale(0.97);
+}
+
+.chat-widget-container {
+  position: fixed;
+  bottom: 110px;
+  right: 30px;
+  width: 420px;
+  height: 75vh;
+  max-height: 760px;
+  background: white;
+  border-radius: 16px;
+  box-shadow: 0 20px 40px -10px rgba(0,0,0,0.2);
+  z-index: 9999;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  animation: popIn 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes popIn {
+  from { opacity: 0; transform: translateY(20px) scale(0.95); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+/* .chat-modal-fullscreen — alias used by some render paths */
+.chat-modal-fullscreen {
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  width: 100vw;
+  height: 100vh;
+  background: var(--bg-surface);
+  z-index: 9999;
+  display: flex;
+  flex-direction: column;
+  animation: slideUp 0.3s ease-out;
+}
+
+
+/* slideUp kept for backward compat */
+@keyframes slideUp {
+  from { transform: translateY(100%); }
+  to   { transform: translateY(0); }
+}
+
+/* ── Mobile overrides (max-width: 900px) ─────────────────────────────────────── */
 
 @media (max-width: 900px) {
-  .dashboard-layout {
+  body {
+    height: auto;
+    overflow: auto;
+  }
+
+  .dashboard-layout,
+  .dashboard-container {
+    padding: 1rem;
+    height: auto;
+    min-height: calc(100vh - 70px);
+    overflow: visible;
+  }
+
+  .dashboard-main {
+    overflow: visible;
+  }
+
+  .dashboard-content-frame {
+    overflow: visible;
+  }
+
+  .analytics-wrapper {
     flex-direction: column;
     height: auto;
-    min-height: 100vh;
-    overflow-y: auto;
-    padding: 1rem;
   }
 
-  .dashboard-sidebar {
-    display: none;
+  .chart-card {
+    min-height: 400px;
+    flex: none;
+    overflow: visible;
   }
 
-  .chat-fab {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    position: fixed;
-    bottom: 20px;
-    right: 20px;
-    width: 60px;
-    height: 60px;
-    border-radius: 50%;
-    background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%);
-    color: white;
-    font-size: 26px;
-    border: none;
-    cursor: pointer;
-    box-shadow: 0 4px 12px rgba(79, 70, 229, 0.5);
-    z-index: 9998;
-    transition: transform 0.2s ease, box-shadow 0.2s ease;
+  /* On mobile the widget goes full-screen */
+  .chat-widget-container {
+    inset: 0;
+    width: 100vw;
+    height: 100vh;
+    max-height: 100vh;
+    border-radius: 0;
+    bottom: 0;
+    right: 0;
+    animation: slideUp 0.3s ease-out;
   }
 
-  .chat-fab:hover {
-    transform: scale(1.08);
-    box-shadow: 0 6px 20px rgba(79, 70, 229, 0.6);
-  }
-
-  .chat-fab:active {
-    transform: scale(0.95);
-  }
-
+  /* Legacy mobile modal classes kept for backward compat */
   .mobile-chat-modal {
     display: flex;
     flex-direction: column;
@@ -363,6 +560,7 @@
     background: white;
     z-index: 9999;
     overflow: hidden;
+    animation: slideUp 0.3s ease-out;
   }
 
   .mobile-chat-modal-header {
@@ -371,20 +569,20 @@
     justify-content: space-between;
     padding: 0.75rem 1rem;
     border-bottom: 1px solid #e5e7eb;
-    background: linear-gradient(135deg, #f3f4f6 0%, #ffffff 100%);
+    background: var(--bg-surface);
     flex-shrink: 0;
   }
 
   .mobile-chat-modal-title {
     font-size: 1rem;
     font-weight: 700;
-    color: #1f2937;
+    color: var(--text-main);
     margin: 0;
   }
 
   .mobile-chat-modal-close {
     background: none;
-    border: 1px solid #d1d5db;
+    border: 1px solid var(--border);
     border-radius: 8px;
     padding: 6px 14px;
     font-size: 0.9rem;

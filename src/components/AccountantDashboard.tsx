@@ -33,15 +33,10 @@ export default function AccountantDashboard() {
   // --- CHAT STATE ---
   const [accountantSub, setAccountantSub] = useState<string>("");
 
-  // --- MOBILE RESPONSIVE STATE ---
-  const [isMobile, setIsMobile] = useState(() => window.innerWidth <= 900);
+  // --- CHAT WIDGET STATE ---
+  // isMobileChatOpen controls the universal chat widget (FAB ↔ panel/modal).
+  // CSS handles desktop-vs-mobile presentation — no JS breakpoint needed.
   const [isMobileChatOpen, setIsMobileChatOpen] = useState(false);
-
-  useEffect(() => {
-    const handleResize = () => setIsMobile(window.innerWidth <= 900);
-    window.addEventListener('resize', handleResize);
-    return () => window.removeEventListener('resize', handleResize);
-  }, []);
 
   const [activeTab, setActiveTab] = useState<"triage" | "setup">("triage");
   const [accountantProfile, setAccountantProfile] = useState({
@@ -376,46 +371,24 @@ export default function AccountantDashboard() {
   );
 
   return (
-    <div className="dashboard-layout">
-      {/* LEFT SIDE: Main Dashboard (65%) */}
-      <main className="content dashboard-main">
-        {/* NAV TABS */}
-        <nav className="nav-tabs" style={{ display: "flex", gap: "1rem", borderBottom: "2px solid #e2e8f0", marginBottom: "1rem", paddingBottom: "0.5rem" }}>
-          <button
-            onClick={() => setActiveTab("triage")}
-            className={activeTab === "triage" ? "active-tab-btn" : "tab-btn"}
-            style={{
-              padding: "0.75rem 1.5rem",
-              border: "none",
-              background: "none",
-              fontSize: "1rem",
-              fontWeight: activeTab === "triage" ? "700" : "500",
-              color: activeTab === "triage" ? "#4f46e5" : "#64748b",
-              cursor: "pointer",
-              borderBottom: activeTab === "triage" ? "3px solid #4f46e5" : "none",
-              marginBottom: "-0.5rem"
-            }}
-          >
-            📋 Triage
-          </button>
-          <button
-            onClick={() => setActiveTab("setup")}
-            className={activeTab === "setup" ? "active-tab-btn" : "tab-btn"}
-            style={{
-              padding: "0.75rem 1.5rem",
-              border: "none",
-              background: "none",
-              fontSize: "1rem",
-              fontWeight: activeTab === "setup" ? "700" : "500",
-              color: activeTab === "setup" ? "#4f46e5" : "#64748b",
-              cursor: "pointer",
-              borderBottom: activeTab === "setup" ? "3px solid #4f46e5" : "none",
-              marginBottom: "-0.5rem"
-            }}
-          >
-            ⚙️ Setup
-          </button>
-        </nav>
+    <div className="dashboard-container">
+      {/* NAV TABS — always visible, never scrolled away */}
+      <nav className="nav-tabs">
+        <button
+          onClick={() => setActiveTab("triage")}
+          className={activeTab === "triage" ? "active-tab-btn" : "tab-btn"}
+        >
+          📋 Triage
+        </button>
+        <button
+          onClick={() => setActiveTab("setup")}
+          className={activeTab === "setup" ? "active-tab-btn" : "tab-btn"}
+        >
+          ⚙️ Setup
+        </button>
+      </nav>
+      {/* SCROLLABLE CONTENT FRAME */}
+      <div className="dashboard-content-frame">
 
         {/* TRIAGE TAB */}
         {activeTab === "triage" && (
@@ -578,7 +551,7 @@ export default function AccountantDashboard() {
                   onClick={handleSaveAccountantProfile}
                   disabled={isSavingProfile}
                   style={{
-                    backgroundColor: "#4f46e5",
+                    backgroundColor: "var(--accent-primary, #2563eb)",
                     color: "white",
                     padding: "0.75rem 1.5rem",
                     borderRadius: "6px",
@@ -729,50 +702,26 @@ export default function AccountantDashboard() {
             </div>
           </div>
         )}
-      </main>
+      </div>{/* end .dashboard-content-frame */}
 
-      {/* RIGHT SIDE: Chat Assistant — desktop sidebar (hidden on mobile via CSS) */}
-      <aside className="dashboard-sidebar">
-        <ChatAssistant
-          viewerRole="ACCOUNTANT"
-          accountantId={accountantSub}
-          customerId={selectedDocument ? selectedDocument.userId : 'GLOBAL'}
-          documentId={selectedDocument ? selectedDocument.documentId : 'dashboard_general'}
-        />
-      </aside>
-
-      {/* Mobile FAB */}
-      {isMobile && !isMobileChatOpen && (
+      {/* ── Global Chat Widget — FAB + fullscreen modal ── */}
+      {!isMobileChatOpen ? (
         <button
           className="chat-fab"
           onClick={() => setIsMobileChatOpen(true)}
           aria-label="Open AI Assistant"
         >
-          🤖
+          💬
         </button>
-      )}
-
-      {/* Mobile full-screen chat modal */}
-      {isMobile && isMobileChatOpen && (
-        <div className="mobile-chat-modal" role="dialog" aria-modal="true" aria-label="AI Assistant">
-          <div className="mobile-chat-modal-header">
-            <p className="mobile-chat-modal-title">🤖 Document Assistant</p>
-            <button
-              className="mobile-chat-modal-close"
-              onClick={() => setIsMobileChatOpen(false)}
-              aria-label="Close chat"
-            >
-              ✕ Close
-            </button>
-          </div>
-          <div className="mobile-chat-modal-body">
-            <ChatAssistant
-              viewerRole="ACCOUNTANT"
-              accountantId={accountantSub}
-              customerId={selectedDocument ? selectedDocument.userId : 'GLOBAL'}
-              documentId={selectedDocument ? selectedDocument.documentId : 'dashboard_general'}
-            />
-          </div>
+      ) : (
+        <div className="chat-modal-fullscreen" role="dialog" aria-modal="true" aria-label="AI Assistant">
+          <ChatAssistant
+            viewerRole="ACCOUNTANT"
+            accountantId={accountantSub}
+            customerId={selectedDocument ? selectedDocument.userId : 'GLOBAL'}
+            documentId={selectedDocument ? selectedDocument.documentId : 'dashboard_general'}
+            onClose={() => setIsMobileChatOpen(false)}
+          />
         </div>
       )}
     </div>

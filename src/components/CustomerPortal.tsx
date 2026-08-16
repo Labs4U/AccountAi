@@ -86,15 +86,10 @@ export default function CustomerPortal() {
   // --- CHAT STATE ---
   const [isChatOpen, setIsChatOpen] = useState(false);
 
-  // --- MOBILE RESPONSIVE STATE ---
-  const [isMobile, setIsMobile] = useState(() => window.innerWidth <= 900);
+  // --- CHAT WIDGET STATE ---
+  // isMobileChatOpen controls the universal chat widget (FAB ↔ panel/modal).
+  // CSS handles desktop-vs-mobile presentation — no JS breakpoint needed.
   const [isMobileChatOpen, setIsMobileChatOpen] = useState(false);
-
-  useEffect(() => {
-    const handleResize = () => setIsMobile(window.innerWidth <= 900);
-    window.addEventListener('resize', handleResize);
-    return () => window.removeEventListener('resize', handleResize);
-  }, []);
 
   // --- REPORTS STATE ---
   const [reportFiles, setReportFiles] = useState<any[]>([]);
@@ -443,7 +438,7 @@ export default function CustomerPortal() {
   };
 
   return (
-    <main className="content dashboard-main" style={{ height: "auto", padding: "0 1.5rem 1.5rem" }}>
+    <div className="dashboard-container">
       <nav className="nav-tabs">
         <button className={activeTab === "upload" ? "active-tab-btn" : "tab-btn"} onClick={() => setActiveTab("upload")}>📤 Upload</button>
         <button className={activeTab === "library" ? "active-tab-btn" : "tab-btn"} onClick={() => setActiveTab("library")}>
@@ -452,18 +447,19 @@ export default function CustomerPortal() {
         <button className={activeTab === "analytics" ? "active-tab-btn" : "tab-btn"} onClick={() => setActiveTab("analytics")}>📊 Analytics</button>
         <button className={activeTab === "setup" ? "active-tab-btn" : "tab-btn"} onClick={() => setActiveTab("setup")}>⚙️ Setup</button>
       </nav>
+      <div className="dashboard-content-frame">
 
       {/* --- ANALYTICS TAB --- */}
       {activeTab === "analytics" && (
-        <div style={{ marginTop: "2rem", paddingBottom: "2rem" }}>
-          <h2>Financial Analytics</h2>
+        <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
+          <h2 style={{ margin: "0 0 0.25rem 0", flexShrink: 0 }}>Financial Analytics</h2>
           <p style={{ color: "#64748b", marginBottom: "2rem" }}>
             Live aggregated data from your finalized, accountant-approved transactions.
           </p>
 
-          <div style={{ display: "flex", gap: "2rem", flexWrap: "wrap", alignItems: "flex-start" }}>
+          <div className="analytics-wrapper">
             
-            <div style={{ flex: "1 1 600px", backgroundColor: '#161b22', padding: '24px', borderRadius: '12px', color: '#e5e7eb', fontFamily: 'sans-serif', boxShadow: "0 10px 15px -3px rgba(0,0,0,0.1)" }}>
+            <div className="chart-card" style={{ backgroundColor: '#161b22', color: '#e5e7eb' }}>
               <div style={{ marginBottom: '24px' }}>
                 <h2 style={{ fontSize: '1.25rem', fontWeight: 'bold', margin: '0 0 16px 0', display: 'flex', alignItems: 'center', gap: '8px' }}>
                   <span style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 4px)', gap: '2px' }}>
@@ -478,7 +474,7 @@ export default function CustomerPortal() {
 
               <h3 style={{ fontSize: '0.9rem', fontWeight: '600', marginBottom: '16px', color: '#f3f4f6' }}>Costs (USD)</h3>
 
-              <div style={{ width: '100%', height: 350, position: 'relative' }}>
+              <div className="chart-container" style={{ minHeight: 350 }}>
                 {chartData.length > 0 ? (
                   <ResponsiveContainer width="100%" height="100%">
                     <BarChart data={chartData} margin={{ top: 0, right: 0, left: -10, bottom: 0 }} barSize={45}>
@@ -500,7 +496,7 @@ export default function CustomerPortal() {
               </div>
             </div>
 
-            <div style={{ flex: "1 1 250px", backgroundColor: "#f8fafc", padding: "1.5rem", borderRadius: "12px", border: "1px solid #e2e8f0" }}>
+            <div className="reports-card">
               <h3 style={{ margin: "0 0 1rem 0", fontSize: "1.1rem", color: "#1e293b", borderBottom: "2px solid #e2e8f0", paddingBottom: "0.5rem" }}>
                 📑 Period Reports
               </h3>
@@ -803,38 +799,26 @@ export default function CustomerPortal() {
         </div>
       )}
 
-      {/* Mobile FAB */}
-      {isMobile && !isMobileChatOpen && (
+      </div>{/* end .dashboard-content-frame */}
+
+      {/* ── Global Chat Widget — FAB + fullscreen modal ── */}
+      {!isMobileChatOpen ? (
         <button
           className="chat-fab"
           onClick={() => setIsMobileChatOpen(true)}
           aria-label="Open AI Assistant"
         >
-          🤖
+          💬
         </button>
-      )}
-
-      {/* Mobile full-screen chat modal */}
-      {isMobile && isMobileChatOpen && (
-        <div className="mobile-chat-modal" role="dialog" aria-modal="true" aria-label="AI Assistant">
-          <div className="mobile-chat-modal-header">
-            <p className="mobile-chat-modal-title">🤖 Document Assistant</p>
-            <button
-              className="mobile-chat-modal-close"
-              onClick={() => setIsMobileChatOpen(false)}
-              aria-label="Close chat"
-            >
-              ✕ Close
-            </button>
-          </div>
-          <div className="mobile-chat-modal-body">
-            <ChatAssistant
-              viewerRole="CUSTOMER"
-              customerId={userSub}
-              accountantId={selectedAccountantSub || 'GLOBAL'}
-              documentId={selectedDocument?.documentId || 'dashboard_general'}
-            />
-          </div>
+      ) : (
+        <div className="chat-modal-fullscreen" role="dialog" aria-modal="true" aria-label="AI Assistant">
+          <ChatAssistant
+            viewerRole="CUSTOMER"
+            customerId={userSub}
+            accountantId={selectedAccountantSub || 'GLOBAL'}
+            documentId={selectedDocument?.documentId || 'dashboard_general'}
+            onClose={() => setIsMobileChatOpen(false)}
+          />
         </div>
       )}
 
@@ -894,6 +878,6 @@ export default function CustomerPortal() {
           </div>
         </div>
       )}
-    </main>
+    </div>
   );
 }
