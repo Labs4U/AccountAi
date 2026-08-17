@@ -86,10 +86,10 @@ export default function CustomerPortal() {
   // --- CHAT STATE ---
   const [isChatOpen, setIsChatOpen] = useState(false);
 
-  // --- CHAT WIDGET STATE ---
-  // isMobileChatOpen controls the universal chat widget (FAB ↔ panel/modal).
-  // CSS handles desktop-vs-mobile presentation — no JS breakpoint needed.
-  const [isMobileChatOpen, setIsMobileChatOpen] = useState(false);
+  // --- CHAT DRAWER STATE ---
+  // Three-tier sliding drawer: CLOSED | HALF | FULL
+  // ChatAssistant stays mounted at all times to preserve conversation history.
+  const [chatWindowState, setChatWindowState] = useState<"CLOSED" | "HALF" | "FULL">("CLOSED");
 
   // --- REPORTS STATE ---
   const [reportFiles, setReportFiles] = useState<any[]>([]);
@@ -678,7 +678,7 @@ export default function CustomerPortal() {
                 <h2 style={{ margin: 0 }}>Document: {selectedDocument.documentId}</h2>
                 <div style={{ display: "flex", gap: "12px", alignItems: "center" }}>
                   <button type="button" onClick={() => handleViewDocument(selectedDocument)} style={{ fontSize: "0.75rem", padding: "4px 8px", backgroundColor: "#f1f5f9", border: "1px solid #cbd5e1", borderRadius: "4px", cursor: "pointer", color: "#334155" }}>👁️ View Original</button>
-                  <button type="button" onClick={() => setIsChatOpen(!isChatOpen)} style={{ fontSize: "0.75rem", padding: "4px 8px", backgroundColor: isChatOpen ? "#e0d7f7" : "#f1f5f9", border: "1px solid #cbd5e1", borderRadius: "4px", cursor: "pointer", color: isChatOpen ? "#6366f1" : "#334155" }}>🤖 Ask AI Agent</button>
+                  {/* <button type="button" onClick={() => setIsChatOpen(!isChatOpen)} style={{ fontSize: "0.75rem", padding: "4px 8px", backgroundColor: isChatOpen ? "#e0d7f7" : "#f1f5f9", border: "1px solid #cbd5e1", borderRadius: "4px", cursor: "pointer", color: isChatOpen ? "#6366f1" : "#334155" }}>🤖 Ask AI Agent</button> */}
                   <button onClick={() => { setSelectedDocument(null); setIsChatOpen(false); }} style={{ background: "none", border: "none", fontSize: "1.5rem", cursor: "pointer", color: "#64748b" }}>✖</button>
                 </div>
               </div>
@@ -801,26 +801,40 @@ export default function CustomerPortal() {
 
       </div>{/* end .dashboard-content-frame */}
 
-      {/* ── Global Chat Widget — FAB + fullscreen modal ── */}
-      {!isMobileChatOpen ? (
+      {/* ── Global Chat Widget — persistent drawer (never unmounts) ── */}
+      {chatWindowState === "CLOSED" && (
         <button
           className="chat-fab"
-          onClick={() => setIsMobileChatOpen(true)}
+          onClick={() => setChatWindowState("HALF")}
           aria-label="Open AI Assistant"
         >
           💬
         </button>
-      ) : (
-        <div className="chat-modal-fullscreen" role="dialog" aria-modal="true" aria-label="AI Assistant">
-          <ChatAssistant
-            viewerRole="CUSTOMER"
-            customerId={userSub}
-            accountantId={selectedAccountantSub || 'GLOBAL'}
-            documentId={selectedDocument?.documentId || 'dashboard_general'}
-            onClose={() => setIsMobileChatOpen(false)}
-          />
-        </div>
       )}
+
+      {/* Drawer wrapper stays in the DOM to preserve ChatAssistant state */}
+      <div
+        className={`chat-drawer-container ${
+          chatWindowState === "CLOSED" ? "chat-drawer-hidden" :
+          chatWindowState === "HALF"   ? "chat-drawer-half"   :
+                                         "chat-drawer-full"
+        }`}
+        role="dialog"
+        aria-modal="true"
+        aria-label="AI Assistant"
+        aria-hidden={chatWindowState === "CLOSED"}
+      >
+        <ChatAssistant
+          viewerRole="CUSTOMER"
+          customerId={userSub}
+          accountantId={selectedAccountantSub || 'GLOBAL'}
+          documentId={selectedDocument?.documentId || 'dashboard_general'}
+          windowState={chatWindowState}
+          onExpand={() => setChatWindowState("FULL")}
+          onShrink={() => setChatWindowState("HALF")}
+          onClose={() => setChatWindowState("CLOSED")}
+        />
+      </div>
 
       {/* --- COA CONFIG MODAL OVERLAY --- */}
       {isCoaModalOpen && (

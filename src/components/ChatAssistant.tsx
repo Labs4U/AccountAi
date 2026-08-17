@@ -16,10 +16,13 @@ interface Message {
 
 interface ChatAssistantProps {
   viewerRole: 'ACCOUNTANT' | 'CUSTOMER'
-  accountantId?: string  // The assigned accountant
-  customerId?: string    // The document owner
-  documentId?: string    // The specific document being viewed
-  onClose?: () => void
+  accountantId?: string        // The assigned accountant
+  customerId?: string          // The document owner
+  documentId?: string          // The specific document being viewed
+  windowState?: 'CLOSED' | 'HALF' | 'FULL'  // Drawer sizing state
+  onExpand?: () => void        // HALF → FULL
+  onShrink?: () => void        // FULL → HALF
+  onClose?: () => void         // Any → CLOSED
 }
 
 /**
@@ -59,7 +62,7 @@ const SUGGESTED_PROMPTS = [
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
-export default function ChatAssistant({ viewerRole, accountantId, customerId, documentId, onClose }: ChatAssistantProps) {
+export default function ChatAssistant({ viewerRole, accountantId, customerId, documentId, windowState, onExpand, onShrink, onClose }: ChatAssistantProps) {
   const [messages, setMessages] = useState<Message[]>([
     {
       role: 'agent',
@@ -217,29 +220,50 @@ export default function ChatAssistant({ viewerRole, accountantId, customerId, do
             <p className="da-subtitle">Powered by Bedrock AI</p>
           </div>
         </div>
-        <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
-          <button onClick={clearChat} className="da-clear-btn" type="button">
+        <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
+          <button
+            onClick={clearChat}
+            type="button"
+            style={{ padding: "6px 12px", fontSize: "0.85rem", border: "1px solid #cbd5e1", borderRadius: "6px", background: "white", cursor: "pointer", color: "#374151" }}
+          >
             Clear
           </button>
-          {onClose && (
-            <button
-              onClick={onClose}
-              type="button"
-              aria-label="Close chat"
-              style={{
-                background: "transparent",
-                border: "none",
-                fontSize: "1.5rem",
-                cursor: "pointer",
-                color: "#64748b",
-                lineHeight: 1,
-                padding: "2px 4px",
-                display: "flex",
-                alignItems: "center",
-              }}
-            >
-              ✕
-            </button>
+
+          {/* Window-state controls — only shown when drawer callbacks are provided */}
+          {(onExpand || onShrink || onClose) && (
+            <div style={{ display: "flex", border: "1px solid #cbd5e1", borderRadius: "6px", overflow: "hidden" }}>
+              {windowState === "HALF" && onExpand && (
+                <button
+                  onClick={onExpand}
+                  title="Full Screen"
+                  type="button"
+                  style={{ padding: "6px 10px", background: "#f8fafc", border: "none", borderRight: "1px solid #cbd5e1", cursor: "pointer", fontSize: "1rem", lineHeight: 1 }}
+                >
+                  ↑
+                </button>
+              )}
+              {windowState === "FULL" && onShrink && (
+                <button
+                  onClick={onShrink}
+                  title="Half Screen"
+                  type="button"
+                  style={{ padding: "6px 10px", background: "#f8fafc", border: "none", borderRight: "1px solid #cbd5e1", cursor: "pointer", fontSize: "1rem", lineHeight: 1 }}
+                >
+                  ↓
+                </button>
+              )}
+              {onClose && (
+                <button
+                  onClick={onClose}
+                  title="Hide Chat"
+                  type="button"
+                  aria-label="Hide chat"
+                  style={{ padding: "6px 10px", background: "#f8fafc", border: "none", cursor: "pointer", fontSize: "1rem", color: "#64748b", lineHeight: 1 }}
+                >
+                  ✕
+                </button>
+              )}
+            </div>
           )}
         </div>
       </div>

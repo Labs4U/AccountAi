@@ -33,10 +33,10 @@ export default function AccountantDashboard() {
   // --- CHAT STATE ---
   const [accountantSub, setAccountantSub] = useState<string>("");
 
-  // --- CHAT WIDGET STATE ---
-  // isMobileChatOpen controls the universal chat widget (FAB ↔ panel/modal).
-  // CSS handles desktop-vs-mobile presentation — no JS breakpoint needed.
-  const [isMobileChatOpen, setIsMobileChatOpen] = useState(false);
+  // --- CHAT DRAWER STATE ---
+  // Three-tier sliding drawer: CLOSED | HALF | FULL
+  // ChatAssistant stays mounted at all times to preserve conversation history.
+  const [chatWindowState, setChatWindowState] = useState<"CLOSED" | "HALF" | "FULL">("CLOSED");
 
   const [activeTab, setActiveTab] = useState<"triage" | "setup">("triage");
   const [accountantProfile, setAccountantProfile] = useState({
@@ -704,26 +704,40 @@ export default function AccountantDashboard() {
         )}
       </div>{/* end .dashboard-content-frame */}
 
-      {/* ── Global Chat Widget — FAB + fullscreen modal ── */}
-      {!isMobileChatOpen ? (
+      {/* ── Global Chat Widget — persistent drawer (never unmounts) ── */}
+      {chatWindowState === "CLOSED" && (
         <button
           className="chat-fab"
-          onClick={() => setIsMobileChatOpen(true)}
+          onClick={() => setChatWindowState("HALF")}
           aria-label="Open AI Assistant"
         >
           💬
         </button>
-      ) : (
-        <div className="chat-modal-fullscreen" role="dialog" aria-modal="true" aria-label="AI Assistant">
-          <ChatAssistant
-            viewerRole="ACCOUNTANT"
-            accountantId={accountantSub}
-            customerId={selectedDocument ? selectedDocument.userId : 'GLOBAL'}
-            documentId={selectedDocument ? selectedDocument.documentId : 'dashboard_general'}
-            onClose={() => setIsMobileChatOpen(false)}
-          />
-        </div>
       )}
+
+      {/* Drawer wrapper stays in the DOM to preserve ChatAssistant state */}
+      <div
+        className={`chat-drawer-container ${
+          chatWindowState === "CLOSED" ? "chat-drawer-hidden" :
+          chatWindowState === "HALF"   ? "chat-drawer-half"   :
+                                         "chat-drawer-full"
+        }`}
+        role="dialog"
+        aria-modal="true"
+        aria-label="AI Assistant"
+        aria-hidden={chatWindowState === "CLOSED"}
+      >
+        <ChatAssistant
+          viewerRole="ACCOUNTANT"
+          accountantId={accountantSub}
+          customerId={selectedDocument ? selectedDocument.userId : 'GLOBAL'}
+          documentId={selectedDocument ? selectedDocument.documentId : 'dashboard_general'}
+          windowState={chatWindowState}
+          onExpand={() => setChatWindowState("FULL")}
+          onShrink={() => setChatWindowState("HALF")}
+          onClose={() => setChatWindowState("CLOSED")}
+        />
+      </div>
     </div>
   );
 }
