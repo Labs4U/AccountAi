@@ -46,7 +46,6 @@ interface ChatAssistantProps {
  * - Voice input support (with microphone fallback)
  * - Markdown rendering with financial compliance context
  * - Real-time thinking indicator with status feedback
- * - Local session storage for message persistence
  */
 
 // ── Suggested prompts ─────────────────────────────────────────────────────────
@@ -61,35 +60,14 @@ const SUGGESTED_PROMPTS = [
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export default function ChatAssistant({ viewerRole, accountantId, customerId, documentId, onClose }: ChatAssistantProps) {
-  // ── Create a unique storage key for this session ──
-  const storageKey = `chat_history_${viewerRole}_${accountantId ?? 'GLOBAL'}_${customerId ?? 'GLOBAL'}_${documentId ?? 'dashboard_general'}`
-
-  // ── Initialize greeting message ──
-  const getGreetingMessage = (): Message => ({
-    role: 'agent',
-    content: viewerRole === 'ACCOUNTANT'
-      ? `👋 Hello! I'm your Financial Compliance Assistant. I can help you analyze client documents, check regulatory compliance, and calculate tax summaries. What would you like to know?`
-      : `👋 Hello! I'm your Document Assistant. I can help you understand your documents, check their status, and answer questions about your financial data. What would you like to know?`,
-  })
-
-  // ── Load messages from sessionStorage on initialization ──
-  const [messages, setMessages] = useState<Message[]>(() => {
-    try {
-      const saved = sessionStorage.getItem(storageKey)
-      if (saved) {
-        const parsed = JSON.parse(saved) as Message[]
-        // Validate that we have an array of messages with proper structure
-        if (Array.isArray(parsed) && parsed.length > 0 && parsed[0].role) {
-          return parsed
-        }
-      }
-    } catch (err) {
-      console.warn(`Failed to load chat history from sessionStorage: ${err}`)
-    }
-    // Fallback to greeting message if no saved history
-    return [getGreetingMessage()]
-  })
-
+  const [messages, setMessages] = useState<Message[]>([
+    {
+      role: 'agent',
+      content: viewerRole === 'ACCOUNTANT'
+        ? `👋 Hello! I'm your Financial Compliance Assistant. I can help you analyze client documents, check regulatory compliance, and calculate tax summaries. What would you like to know?`
+        : `👋 Hello! I'm your Document Assistant. I can help you understand your documents, check their status, and answer questions about your financial data. What would you like to know?`,
+    },
+  ])
   const [input, setInput] = useState('')
   const [thinking, setThinking] = useState(false)
   const bottomRef = useRef<HTMLDivElement>(null)
@@ -102,15 +80,6 @@ export default function ChatAssistant({ viewerRole, accountantId, customerId, do
   // Generate a fresh session ID scoped to this document, user, and accountant
   // Format: doc_session_{accountantId}_{userId}_{documentId}
   const [sessionId] = useState(() => `doc_session_${viewerRole}_${accountantId ?? 'GLOBAL'}_${customerId ?? 'GLOBAL'}_${documentId ?? 'dashboard_general'}`)
-
-  // ── Auto-save messages to sessionStorage whenever they change ──
-  useEffect(() => {
-    try {
-      sessionStorage.setItem(storageKey, JSON.stringify(messages))
-    } catch (err) {
-      console.error(`Failed to save chat history to sessionStorage: ${err}`)
-    }
-  }, [messages, storageKey])
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -187,15 +156,16 @@ export default function ChatAssistant({ viewerRole, accountantId, customerId, do
     void sendMessage(input)
   }
 
-  // ── Clear chat and sessionStorage ──
   const clearChat = () => {
-    setMessages([getGreetingMessage()])
+    setMessages([
+      {
+        role: 'agent',
+        content: viewerRole === 'ACCOUNTANT'
+          ? `👋 Hello! I'm your Financial Compliance Assistant. I can help you analyze client documents, check regulatory compliance, and calculate tax summaries. What would you like to know?`
+          : `👋 Hello! I'm your Document Assistant. I can help you understand your documents, check their status, and answer questions about your financial data. What would you like to know?`,
+      },
+    ])
     setInput('')
-    try {
-      sessionStorage.removeItem(storageKey)
-    } catch (err) {
-      console.warn(`Failed to clear chat history from sessionStorage: ${err}`)
-    }
   }
 
   // ── Voice input handler ──────────────────────────────────────────────────────
