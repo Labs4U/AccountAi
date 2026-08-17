@@ -58,6 +58,23 @@ const SUGGESTED_PROMPTS = [
   "Find invoices from vendor 'DrugStore'",
 ] as const
 
+// ── Markdown pre-processor ───────────────────────────────────────────────────
+
+// Helper: Ensure tables have proper spacing and line breaks for remark-gfm
+const formatMarkdownContent = (content: string): string => {
+  if (!content) return ''
+
+  let formatted = content
+
+  // 1. Ensure a blank line before any table starting with a pipe '|'
+  formatted = formatted.replace(/([^\n])\n?(\|[\s\S]*?\|)/g, '$1\n\n$2')
+
+  // 2. Fix squashed table rows if newlines between pipes were lost
+  formatted = formatted.replace(/\|\s*\|(?=[-\w\d])/g, '|\n|')
+
+  return formatted
+}
+
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export default function ChatAssistant({ viewerRole, accountantId, customerId, documentId, onClose }: ChatAssistantProps) {
@@ -320,10 +337,10 @@ export default function ChatAssistant({ viewerRole, accountantId, customerId, do
             style={msg.role === 'user' ? { whiteSpace: 'pre-wrap' } : {}}
           >
             {msg.role === 'agent' ? (
-              <div className="table-wrapper" style={{ border: "none", boxShadow: "none", borderRadius: 0, background: "transparent" }}>
+              <div className="table-wrapper" style={{ border: "none", boxShadow: "none", borderRadius: 0, background: "transparent", width: "100%", overflowX: "auto" }}>
                 <div className="markdown-body">
                   <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                    {msg.content}
+                    {formatMarkdownContent(msg.content)}
                   </ReactMarkdown>
                 </div>
               </div>
