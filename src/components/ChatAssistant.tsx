@@ -195,57 +195,76 @@ export default function ChatAssistant({ viewerRole, accountantId, customerId, do
     }
   }
 
-  // ── Web Speech API Voice Input Handler ──────────────────────────────────────
+  // ── Web Speech API Voice Input Handler (TypeScript-safe, bulletproof) ────────
   const handleVoiceInput = () => {
-    // @ts-ignore - Vendor prefixes for SpeechRecognition
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
+    // 1. Type-safe window access — prevents silent CI/CD build failures
+    const SpeechRecognition =
+      typeof window !== 'undefined' &&
+      ((window as any).SpeechRecognition || (window as any).webkitSpeechRecognition)
 
     if (!SpeechRecognition) {
-      alert('Your browser does not support voice input. Please use Chrome, Edge, or Safari.')
+      alert('Your browser does not support voice input. Please use Google Chrome or Microsoft Edge.')
       return
     }
 
+    // 2. Safely stop existing recording
     if (isRecording) {
-      // Stop recording
       if (recognitionRef.current) {
-        recognitionRef.current.stop()
+        try {
+          recognitionRef.current.stop()
+        } catch (e) {
+          console.warn('Could not stop recognition safely', e)
+        }
       }
+      setIsRecording(false)
       return
     }
 
-    // Start recording
-    const recognition = new SpeechRecognition()
-    recognitionRef.current = recognition
+    // 3. Initialize new recording session
+    try {
+      const recognition = new SpeechRecognition()
+      recognitionRef.current = recognition
 
-    recognition.lang = 'en-US'
-    recognition.interimResults = false
-    recognition.maxAlternatives = 1
+      recognition.lang = 'en-US'
+      recognition.continuous = false      // Auto-stop when user pauses
+      recognition.interimResults = false
+      recognition.maxAlternatives = 1
 
-    recognition.onstart = () => {
-      setIsRecording(true)
-    }
-
-    recognition.onresult = (event: any) => {
-      const transcript = event.results[0][0].transcript
-      // Append the voice text to whatever is already in the input box
-      setInput((prev) => (prev ? `${prev} ${transcript}` : transcript))
-    }
-
-    recognition.onerror = (event: any) => {
-      console.error('Speech recognition error:', event.error)
-      setIsRecording(false)
-      if (event.error === 'no-speech') {
-        alert('No speech detected. Please try again.')
-      } else if (event.error === 'network') {
-        alert('Network error during speech recognition.')
+      recognition.onstart = () => {
+        setIsRecording(true)
       }
-    }
 
-    recognition.onend = () => {
+      recognition.onresult = (event: any) => {
+        const transcript = event.results[0][0].transcript
+        // Append transcribed text to whatever is already in the input box
+        setInput((prev) => (prev ? `${prev} ${transcript}` : transcript))
+      }
+
+      recognition.onerror = (event: any) => {
+        console.error('Speech recognition error:', event.error)
+        setIsRecording(false)
+
+        // Explicitly handle browser permission blocks
+        if (event.error === 'not-allowed') {
+          alert('Microphone access was denied. Please click the padlock icon in your URL bar to allow microphone permissions.')
+        } else if (event.error === 'no-speech') {
+          console.warn('No speech was detected.')
+        } else {
+          alert(`Voice input error: ${event.error}`)
+        }
+      }
+
+      recognition.onend = () => {
+        setIsRecording(false)
+      }
+
+      // 4. Start recording
+      recognition.start()
+    } catch (err) {
+      console.error('Failed to initialize speech recognition:', err)
       setIsRecording(false)
+      alert('Could not start the microphone. Please ensure no other tab is actively using it.')
     }
-
-    recognition.start()
   }
 
   return (
