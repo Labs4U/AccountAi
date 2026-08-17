@@ -43,7 +43,7 @@ interface ChatAssistantProps {
  * Features:
  * - Streaming SSE responses with thinking block stripping
  * - Suggested prompts for common compliance questions
- * - Voice input support (with microphone fallback)
+ * - Browser-native Web Speech API for voice input
  * - Markdown rendering with financial compliance context
  * - Real-time thinking indicator with status feedback
  * - Local session storage for message persistence
@@ -93,11 +93,8 @@ export default function ChatAssistant({ viewerRole, accountantId, customerId, do
   const [input, setInput] = useState('')
   const [thinking, setThinking] = useState(false)
   const bottomRef = useRef<HTMLDivElement>(null)
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null)
-  const audioChunksRef = useRef<Blob[]>([])
+  const recognitionRef = useRef<any>(null)
   const [isRecording, setIsRecording] = useState(false)
-  // isBrowserSupported tracks whether getUserMedia is available; set on mic error
-  const [, setIsBrowserSupported] = useState(true)
 
   // Generate a fresh session ID scoped to this document, user, and accountant
   // Format: doc_session_{accountantId}_{userId}_{documentId}
@@ -198,42 +195,57 @@ export default function ChatAssistant({ viewerRole, accountantId, customerId, do
     }
   }
 
-  // ── Voice input handler ──────────────────────────────────────────────────────
-  const toggleVoiceRecording = async () => {
+  // ── Web Speech API Voice Input Handler ──────────────────────────────────────
+  const handleVoiceInput = () => {
+    // @ts-ignore - Vendor prefixes for SpeechRecognition
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
+
+    if (!SpeechRecognition) {
+      alert('Your browser does not support voice input. Please use Chrome, Edge, or Safari.')
+      return
+    }
+
     if (isRecording) {
       // Stop recording
-      if (mediaRecorderRef.current) {
-        mediaRecorderRef.current.stop()
-        setIsRecording(false)
+      if (recognitionRef.current) {
+        recognitionRef.current.stop()
       }
-    } else {
-      // Start recording
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-        const mediaRecorder = new MediaRecorder(stream)
-        mediaRecorderRef.current = mediaRecorder
-        audioChunksRef.current = []
+      return
+    }
 
-        mediaRecorder.ondataavailable = (event: BlobEvent) => {
-          audioChunksRef.current.push(event.data)
-        }
+    // Start recording
+    const recognition = new SpeechRecognition()
+    recognitionRef.current = recognition
 
-        mediaRecorder.onstop = async () => {
-          const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/wav' })
-          // For now, send a placeholder transcription
-          // In production, integrate with AWS Transcribe or similar
-          const transcribedText = `[Voice message: ${audioBlob.size} bytes recorded]`
-          void sendMessage(transcribedText)
-          stream.getTracks().forEach(track => track.stop())
-        }
+    recognition.lang = 'en-US'
+    recognition.interimResults = false
+    recognition.maxAlternatives = 1
 
-        mediaRecorder.start()
-        setIsRecording(true)
-      } catch (err) {
-        console.error('Microphone access denied:', err)
-        setIsBrowserSupported(false)
+    recognition.onstart = () => {
+      setIsRecording(true)
+    }
+
+    recognition.onresult = (event: any) => {
+      const transcript = event.results[0][0].transcript
+      // Append the voice text to whatever is already in the input box
+      setInput((prev) => (prev ? `${prev} ${transcript}` : transcript))
+    }
+
+    recognition.onerror = (event: any) => {
+      console.error('Speech recognition error:', event.error)
+      setIsRecording(false)
+      if (event.error === 'no-speech') {
+        alert('No speech detected. Please try again.')
+      } else if (event.error === 'network') {
+        alert('Network error during speech recognition.')
       }
     }
+
+    recognition.onend = () => {
+      setIsRecording(false)
+    }
+
+    recognition.start()
   }
 
   return (
@@ -347,10 +359,15 @@ export default function ChatAssistant({ viewerRole, accountantId, customerId, do
         <button
           className="da-voice-btn-small"
           type="button"
-          onClick={toggleVoiceRecording}
+          onClick={handleVoiceInput}
           disabled={thinking}
           aria-label={isRecording ? "Stop recording" : "Start voice recording"}
           title={isRecording ? "Stop recording" : "Voice input"}
+          style={{
+            color: isRecording ? '#ef4444' : '#64748b',
+            background: isRecording ? '#fee2e2' : 'transparent',
+            animation: isRecording ? 'pulse 1.5s infinite' : 'none',
+          }}
         >
           {isRecording ? '🎙️' : '🎤'}
         </button>
