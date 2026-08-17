@@ -225,7 +225,11 @@ export default function ChatAssistant({ viewerRole, accountantId, customerId, do
       const recognition = new SpeechRecognition()
       recognitionRef.current = recognition
 
-      recognition.lang = 'en-US'
+      // Dynamically use the browser's locale to satisfy Safari's dictation engine
+      recognition.lang =
+        typeof window !== 'undefined' && window.navigator.language
+          ? window.navigator.language
+          : 'en-US'
       recognition.continuous = false      // Auto-stop when user pauses
       recognition.interimResults = false
       recognition.maxAlternatives = 1
@@ -244,9 +248,11 @@ export default function ChatAssistant({ viewerRole, accountantId, customerId, do
         console.error('Speech recognition error:', event.error)
         setIsRecording(false)
 
-        // Explicitly handle browser permission blocks
         if (event.error === 'not-allowed') {
           alert('Microphone access was denied. Please click the padlock icon in your URL bar to allow microphone permissions.')
+        } else if (event.error === 'service-not-allowed') {
+          // Safari: dictation service blocked — usually HTTPS or OS dictation setting
+          alert('Safari blocked the dictation service. This typically happens when the site is not on HTTPS, or Siri/Dictation is disabled in System Settings. For reliable voice input, please use Google Chrome or Microsoft Edge.')
         } else if (event.error === 'no-speech') {
           console.warn('No speech was detected.')
         } else {
