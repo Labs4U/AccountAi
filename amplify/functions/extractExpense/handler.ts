@@ -104,8 +104,22 @@ export const handler: Handler<ExtractionPayload> = async (event) => {
 
     // Emergency Fallback (Just in case the SYSTEM record is accidentally deleted)
     if (userCoaList.length === 0) {
+      console.warn("No custom COA found. Injecting comprehensive Global Fallback list.");
       userCoaList = [
-        { code: "6350", name: "Miscellaneous Expenses" }
+        { code: "1000", name: "ASSETS" }, { code: "1100", name: "Cash on Hand" }, 
+        { code: "1200", name: "Accounts Receivable" }, { code: "1300", name: "Inventory" }, 
+        { code: "1400", name: "Prepaid Expenses" }, { code: "1500", name: "Fixed Assets" },
+        { code: "2000", name: "LIABILITIES" }, { code: "2100", name: "Accounts Payable" }, 
+        { code: "2200", name: "Accrued Expenses" }, { code: "2300", name: "VAT/Sales Tax Payable" }, 
+        { code: "3000", name: "EQUITY" }, { code: "4000", name: "REVENUE" }, 
+        { code: "5000", name: "COST OF SALES" }, { code: "6000", name: "OPERATING EXPENSES" }, 
+        { code: "6100", name: "Salaries and Wages" }, { code: "6200", name: "Rent Expense" }, 
+        { code: "6210", name: "Utilities Expense" }, { code: "6220", name: "Telephone & Internet" }, 
+        { code: "6230", name: "Office Supplies" }, { code: "6240", name: "Repairs & Maintenance" }, 
+        { code: "6290", name: "Travel & Entertainment" }, { code: "6300", name: "Marketing & Advertising" }, 
+        { code: "6310", name: "Professional Fees" }, { code: "6330", name: "Software Subscriptions" }, 
+        { code: "6340", name: "Training Expense" }, { code: "6350", name: "Miscellaneous Expenses" }, 
+        { code: "7000", name: "FINANCE & TAX EXPENSES" }
       ];
     }
 
@@ -142,13 +156,73 @@ export const handler: Handler<ExtractionPayload> = async (event) => {
       if (type === "RECEIVER_TAX_ID" && val) trn = val;
     });
 
+    // 🟢 NEW: Extract actual Line Items (What was purchased)
+    let purchasedItems: string[] = [];
+    const lineItemGroups = textractResponse.ExpenseDocuments?.[0]?.LineItemGroups || [];
+    
+    lineItemGroups.forEach(group => {
+      group.LineItems?.forEach(item => {
+        // Look specifically for the "ITEM" description field
+        const itemDesc = item.LineItemExpenseFields?.find(f => f.Type?.Text === "ITEM")?.ValueDetection?.Text;
+        if (itemDesc) purchasedItems.push(itemDesc);
+      });
+    });
+    
+    const purchasedItemsStr = purchasedItems.length > 0 ? purchasedItems.join(", ") : "Unspecified / Summary Only";
+
     const calculatedSubtotal = total - tax;
     const isMathValid = subtotal > 0 
         ? Math.abs((subtotal + tax) - total) < 0.05 
         : Math.abs(calculatedSubtotal + tax - total) < 0.05;
 
+
     // ---------------------------------------------------------
-    // 3. AI AGENT REASONING (Amazon Bedrock)
+    // 2B. HISTORICAL MEMORY RETRIEVAL (RAG)
+    // ---------------------------------------------------------
+    let historicalContext = "No previous history for this vendor.";
+    if (vendorName !== "Unknown Vendor") {
+      try {
+        // Query AppSync for finalized documents from this specific user
+        const historyQuery = `
+          query ListHistoricalDocs($userId: String!) {
+            listDocumentRecords(filter: { 
+              userId: { eq: $userId },
+              status: { eq: "FINALIZED" } 
+            }, limit: 100) {
+              items {
+                extractedVendor
+                extractedTotal
+                mappedAccountCode
+                mappedAccountName
+              }
+            }
+          }
+        `;
+        
+        const historyRes = await executeGraphQL(historyQuery, { userId: userId });
+        const pastDocs = historyRes?.listDocumentRecords?.items || [];
+        
+        // Filter in memory for this specific vendor (case insensitive)
+        const vendorHistory = pastDocs.filter((d: any) => 
+          d.extractedVendor && d.extractedVendor.toLowerCase().includes(vendorName.toLowerCase())
+        );
+
+        if (vendorHistory.length > 0) {
+          // Take the 3 most recent examples
+          const recentHistory = vendorHistory.slice(0, 3).map((d: any) => 
+            `- Amount: $${d.extractedTotal || 0} -> Mapped to: ${d.mappedAccountCode} (${d.mappedAccountName})`
+          ).join("\n");
+          
+          historicalContext = `\n${recentHistory}`;
+          console.log(`🧠 Found historical memory for ${vendorName}:`, historicalContext);
+        }
+      } catch (histErr) {
+        console.warn("Could not retrieve historical context.", histErr);
+      }
+    }
+
+    // ---------------------------------------------------------
+    // 3. AI AGENT REASONING (Amazon Bedrock) - WITH RAG
     // ---------------------------------------------------------
     let finalCoaCode = "6350";
     let finalCoaName = "Miscellaneous Expenses";
@@ -158,12 +232,23 @@ export const handler: Handler<ExtractionPayload> = async (event) => {
       Analyze this extracted document data:
       - Vendor: ${vendorName}
       - Total Amount: ${total}
+      - Purchased Items: ${purchasedItemsStr}
+
+      Here is how this specific customer categorized past invoices from this vendor:
+      ${historicalContext}
 
       Here is the customer's specific Chart of Accounts (COA):
       ${JSON.stringify(userCoaList, null, 2)}
 
-      Task: Select the single most appropriate COA category for this expense based on the Vendor name.
-      You MUST respond with a valid JSON object and nothing else. No markdown, no conversational text.
+      Task: Select the single most appropriate COA category for this expense.
+      
+      Rules:
+      1. CRITICAL: If there is "past invoice" history provided above, you MUST map this expense to the exact same COA code and name used previously, unless the "Purchased Items" indicate a drastically different purchase.
+      2. If there is no history, rely on the "Purchased Items" (e.g., "Printer Ink" = Office Supplies).
+      3. If the items are "Unspecified" and there is no history, map the Vendor's primary industry to the most logical COA.
+      4. Fallback: If completely unknown, default to "Miscellaneous Expenses".
+
+      You MUST respond with a valid JSON object and NOTHING ELSE. Do not include markdown formatting, backticks, or conversational text.
       Format: {"code": "SELECTED_CODE", "name": "SELECTED_NAME"}
     `;
 
@@ -176,17 +261,29 @@ export const handler: Handler<ExtractionPayload> = async (event) => {
       );
 
       let resultText = bedrockResponse.output?.message?.content?.[0]?.text?.trim() || "{}";
-      resultText = resultText.replace(/```json/g, '').replace(/```/g, '').trim();
       
-      const agentDecision = JSON.parse(resultText);
-      if (agentDecision.code && agentDecision.name) {
-        finalCoaCode = agentDecision.code;
-        finalCoaName = agentDecision.name;
-        console.log(`AI Mapped ${vendorName} to ${finalCoaCode} - ${finalCoaName}`);
+      // DIAGNOSTIC: See what the AI actually said in CloudWatch
+      console.log("RAW BEDROCK COA RESPONSE:", resultText);
+      
+      // Aggressively strip out Markdown backticks if the AI disobeys instructions
+      resultText = resultText.replace(/```json/gi, '').replace(/```/g, '').trim();
+      
+      // Safely parse
+      if (resultText.startsWith('{') && resultText.endsWith('}')) {
+          const agentDecision = JSON.parse(resultText);
+          if (agentDecision.code && agentDecision.name) {
+            finalCoaCode = agentDecision.code;
+            finalCoaName = agentDecision.name;
+            console.log(`✅ AI Successfully Mapped ${vendorName} to ${finalCoaCode} - ${finalCoaName}`);
+          }
+      } else {
+          console.warn("❌ Bedrock did not return a pure JSON object. Fallback to Miscellaneous.");
       }
     } catch (agentErr) {
-      console.warn("AI Agent COA mapping failed, falling back to Miscellaneous.", agentErr);
+      console.warn("❌ AI Agent COA mapping failed, falling back to Miscellaneous.", agentErr);
     }
+
+    
 
    // ---------------------------------------------------------
     // 4. UPDATE VIA APPSYNC (Triggers Frontend Subscriptions)

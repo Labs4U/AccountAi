@@ -51,10 +51,10 @@ interface ChatAssistantProps {
 // ── Suggested prompts ─────────────────────────────────────────────────────────
 
 const SUGGESTED_PROMPTS = [
-  'Show me all pending documents.',
-  'Calculate the total tax summary across all clients.',
-  'Find all invoices from a specific vendor.',
-  'List all finalized documents.',
+  'List all PENDING documents',
+  'List all FINALIZED documents',
+  'Calculate global tax summary',
+  "Find invoices from vendor 'DrugStore'",
 ] as const
 
 // ── Component ─────────────────────────────────────────────────────────────────
