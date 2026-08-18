@@ -83,6 +83,8 @@ export default function CustomerPortal() {
   const [showCoaDropdown, setShowCoaDropdown] = useState(false);
   const [editForm, setEditForm] = useState({ vendorName: "", date: "", total: "", tax: "" });
   const [isApproving, setIsApproving] = useState(false);
+  const [docToDelete, setDocToDelete] = useState<Schema["DocumentRecord"]["type"] | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
   // --- CHAT STATE ---
   const [isChatOpen, setIsChatOpen] = useState(false);
 
@@ -629,7 +631,7 @@ export default function CustomerPortal() {
           <table className="table" style={{ width: "100%", textAlign: "left" }}>
             <thead>
               <tr style={{ background: "#f5f5f5" }}>
-                <th>ID</th><th>Vendor</th><th>Date</th><th>Total</th><th>Category</th><th>Status</th>
+                <th>ID</th><th>Vendor</th><th>Date</th><th>Total</th><th>Category</th><th>Status</th><th></th>
               </tr>
             </thead>
             <tbody>
@@ -654,6 +656,20 @@ export default function CustomerPortal() {
                   <td>{doc.extractedTotal ? `$${doc.extractedTotal}` : "-"}</td>
                   <td>{doc.mappedAccountName || "-"}</td>
                   <td><span className="badge">{doc.status}</span></td>
+                  <td style={{ textAlign: "center" }}>
+                    {(doc.status === "PROCESSING" || doc.status === "PENDING_CUSTOMER") && (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation(); // 🔴 CRITICAL: Prevents opening the review modal
+                          setDocToDelete(doc);
+                        }}
+                        style={{ background: "none", border: "none", cursor: "pointer", fontSize: "1.2rem" }}
+                        title="Delete Document"
+                      >
+                        🗑️
+                      </button>
+                    )}
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -678,7 +694,7 @@ export default function CustomerPortal() {
                 <h2 style={{ margin: 0 }}>Document: {selectedDocument.documentId}</h2>
                 <div style={{ display: "flex", gap: "12px", alignItems: "center" }}>
                   <button type="button" onClick={() => handleViewDocument(selectedDocument)} style={{ fontSize: "0.75rem", padding: "4px 8px", backgroundColor: "#f1f5f9", border: "1px solid #cbd5e1", borderRadius: "4px", cursor: "pointer", color: "#334155" }}>👁️ View Original</button>
-                  <button type="button" onClick={() => setIsChatOpen(!isChatOpen)} style={{ fontSize: "0.75rem", padding: "4px 8px", backgroundColor: isChatOpen ? "#e0d7f7" : "#f1f5f9", border: "1px solid #cbd5e1", borderRadius: "4px", cursor: "pointer", color: isChatOpen ? "#6366f1" : "#334155" }}>🤖 Ask AI Agent</button>
+                  {/* <button type="button" onClick={() => setIsChatOpen(!isChatOpen)} style={{ fontSize: "0.75rem", padding: "4px 8px", backgroundColor: isChatOpen ? "#e0d7f7" : "#f1f5f9", border: "1px solid #cbd5e1", borderRadius: "4px", cursor: "pointer", color: isChatOpen ? "#6366f1" : "#334155" }}>🤖 Ask AI Agent</button> */}
                   <button onClick={() => { setSelectedDocument(null); setIsChatOpen(false); }} style={{ background: "none", border: "none", fontSize: "1.5rem", cursor: "pointer", color: "#64748b" }}>✖</button>
                 </div>
               </div>
@@ -795,6 +811,53 @@ export default function CustomerPortal() {
                 />
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* --- DELETION CONFIRMATION MODAL --- */}
+      {docToDelete && (
+        <div style={{
+          position: "fixed", top: 0, left: 0, width: "100vw", height: "100vh",
+          backgroundColor: "rgba(0,0,0,0.5)", display: "flex", justifyContent: "center", alignItems: "center", zIndex: 1050
+        }}>
+          <div style={{ background: "white", padding: "2rem", borderRadius: "12px", width: "90%", maxWidth: "400px", textAlign: "center", boxShadow: "0 10px 25px rgba(0,0,0,0.2)" }}>
+            <h3 style={{ margin: "0 0 1rem 0", color: "#0f172a" }}>Delete Document?</h3>
+            <p style={{ color: "#64748b", marginBottom: "2rem" }}>
+              Are you sure you want to delete document <strong>{docToDelete.documentId}</strong>? This action cannot be undone.
+            </p>
+            <div style={{ display: "flex", justifyContent: "space-between", gap: "1rem" }}>
+              <button
+                className="secondary-btn"
+                onClick={() => setDocToDelete(null)}
+                disabled={isDeleting}
+                style={{ flex: 1 }}
+              >
+                Cancel
+              </button>
+              <button
+                className="success-btn"
+                disabled={isDeleting}
+                style={{ flex: 1, backgroundColor: "#ef4444" }}
+                onClick={async () => {
+                  setIsDeleting(true);
+                  try {
+                    await client.models.DocumentRecord.delete({
+                      userId: docToDelete.userId,
+                      documentId: docToDelete.documentId
+                    });
+                    setDocToDelete(null);
+                  } catch (err) {
+                    alert("Failed to delete document.");
+                    console.error(err);
+                  } finally {
+                    setIsDeleting(false);
+                  }
+                }}
+              >
+                {isDeleting ? "Deleting..." : "Yes, Delete"}
+              </button>
+            </div>
           </div>
         </div>
       )}
