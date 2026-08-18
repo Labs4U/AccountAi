@@ -66,11 +66,14 @@ const formatMarkdownContent = (content: string): string => {
 
   let formatted = content
 
-  // 1. Ensure a blank line before any table starting with a pipe '|'
-  formatted = formatted.replace(/([^\n])\n?(\|[\s\S]*?\|)/g, '$1\n\n$2')
+  // 1. Force a double newline before the table starts
+  // Finds a colon followed by optional spaces and a pipe (e.g., "documents: |")
+  formatted = formatted.replace(/:\s*\|/g, ':\n\n|')
 
-  // 2. Fix squashed table rows if newlines between pipes were lost
-  formatted = formatted.replace(/\|\s*\|(?=[-\w\d])/g, '|\n|')
+  // 2. Fix squashed table rows 
+  // Finds two pipes separated only by spaces (e.g., "| |---| " or "| | doc-")
+  // and injects a clean newline between them.
+  formatted = formatted.replace(/\|\s+\|/g, '|\n|')
 
   return formatted
 }
