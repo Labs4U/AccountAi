@@ -4,7 +4,6 @@ import { BedrockRuntimeClient, ConverseCommand } from '@aws-sdk/client-bedrock-r
 import { PDFDocument } from 'pdf-lib';
 const textract = new TextractClient({});
 const bedrock = new BedrockRuntimeClient({});
-
 // ---------------------------------------------------------
 // HELPER: NATIVE GRAPHQL FETCH (Replaces Amplify Client)
 // ---------------------------------------------------------
