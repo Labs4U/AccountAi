@@ -657,7 +657,7 @@ export default function CustomerPortal() {
                   <td>{doc.mappedAccountName || "-"}</td>
                   <td><span className="badge">{doc.status}</span></td>
                   <td style={{ textAlign: "center" }}>
-  {/* 🟢 UPDATED: Check against an array of allowed deletion statuses */}
+  {/* 🟢 ADDED: "|| ''" to satisfy strict TypeScript validation */}
   {['PROCESSING', 'PENDING_CUSTOMER', 'PROCESSING_FAILED'].includes(doc.status || '') && (
     <button
       onClick={(e) => {

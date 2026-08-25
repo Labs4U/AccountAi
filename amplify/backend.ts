@@ -128,7 +128,8 @@ backend.classifyDocument.resources.lambda.addToRolePolicy(
 
 backend.extractExpense.resources.lambda.addToRolePolicy(
   new iam.PolicyStatement({
-    actions: ['textract:AnalyzeExpense'],
+    actions: ['textract:AnalyzeExpense',"textract:StartExpenseAnalysis", 
+  "textract:GetExpenseAnalysis",],
     resources: ['*'], 
   })
 );

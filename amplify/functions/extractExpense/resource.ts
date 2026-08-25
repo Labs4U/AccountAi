@@ -3,7 +3,7 @@ import { defineFunction } from '@aws-amplify/backend';
 export const extractExpense = defineFunction({
   name: 'extractExpense',
   entry: './handler.ts',
-  timeoutSeconds: 90, // Textract can take a few seconds
+  timeoutSeconds: 120, // Textract can take a few seconds
   runtime: 20,
   resourceGroupName: 'storage',
   environment: {
