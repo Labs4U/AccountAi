@@ -658,7 +658,7 @@ export default function CustomerPortal() {
                   <td><span className="badge">{doc.status}</span></td>
                   <td style={{ textAlign: "center" }}>
   {/* 🟢 UPDATED: Check against an array of allowed deletion statuses */}
-  {['PROCESSING', 'PENDING_CUSTOMER', 'PROCESSING_FAILED'].includes(doc.status) && (
+  {['PROCESSING', 'PENDING_CUSTOMER', 'PROCESSING_FAILED'].includes(doc.status || '') && (
     <button
       onClick={(e) => {
         e.stopPropagation(); 
