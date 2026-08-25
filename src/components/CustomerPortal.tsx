@@ -657,19 +657,20 @@ export default function CustomerPortal() {
                   <td>{doc.mappedAccountName || "-"}</td>
                   <td><span className="badge">{doc.status}</span></td>
                   <td style={{ textAlign: "center" }}>
-                    {(doc.status === "PROCESSING" || doc.status === "PENDING_CUSTOMER") && (
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation(); // 🔴 CRITICAL: Prevents opening the review modal
-                          setDocToDelete(doc);
-                        }}
-                        style={{ background: "none", border: "none", cursor: "pointer", fontSize: "1.2rem" }}
-                        title="Delete Document"
-                      >
-                        🗑️
-                      </button>
-                    )}
-                  </td>
+  {/* 🟢 UPDATED: Check against an array of allowed deletion statuses */}
+  {['PROCESSING', 'PENDING_CUSTOMER', 'PROCESSING_FAILED'].includes(doc.status) && (
+    <button
+      onClick={(e) => {
+        e.stopPropagation(); 
+        setDocToDelete(doc);
+      }}
+      style={{ background: "none", border: "none", cursor: "pointer", fontSize: "1.2rem" }}
+      title="Delete Document"
+    >
+      🗑️
+    </button>
+  )}
+</td>
                 </tr>
               ))}
             </tbody>

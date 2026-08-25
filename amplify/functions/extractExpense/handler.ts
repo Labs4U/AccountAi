@@ -1,7 +1,7 @@
 import { Handler } from 'aws-lambda';
 import { TextractClient, AnalyzeExpenseCommand } from '@aws-sdk/client-textract';
 import { BedrockRuntimeClient, ConverseCommand } from '@aws-sdk/client-bedrock-runtime';
-
+import { PDFDocument } from 'pdf-lib';
 const textract = new TextractClient({});
 const bedrock = new BedrockRuntimeClient({});
 
