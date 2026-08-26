@@ -24,6 +24,32 @@ const executeGraphQL = async (query: string, variables: any) => {
   return json.data;
 };
 
+// 🟢 NEW HELPER: BULLETPROOF UPSERT
+// Safely handles DynamoDB ConditionalCheckFailedExceptions due to race conditions or retries
+const safeUpsertRecord = async (payload: any, attemptCreateFirst: boolean) => {
+  const createQuery = `mutation CreateDocumentRecord($input: CreateDocumentRecordInput!) { createDocumentRecord(input: $input) { documentId } }`;
+  const updateQuery = `mutation UpdateDocumentRecord($input: UpdateDocumentRecordInput!) { updateDocumentRecord(input: $input) { documentId } }`;
+  
+  try {
+    if (attemptCreateFirst) {
+      await executeGraphQL(createQuery, { input: { recordType: "DOCUMENT", ...payload } });
+    } else {
+      await executeGraphQL(updateQuery, { input: payload });
+    }
+  } catch (error: any) {
+    if (error.message && (error.message.includes("ConditionalCheckFailed") || error.message.includes("conditional request failed"))) {
+      console.log(`Swap fallback triggered for ${payload.documentId}.`);
+      if (attemptCreateFirst) {
+        await executeGraphQL(updateQuery, { input: payload });
+      } else {
+        await executeGraphQL(createQuery, { input: { recordType: "DOCUMENT", ...payload } });
+      }
+    } else {
+      throw error;
+    }
+  }
+};
+
 interface ExtractionPayload {
   documentType: string;
   bucket: string;
@@ -112,7 +138,7 @@ export const handler: Handler<ExtractionPayload> = async (event) => {
     if (expenseDocs.length === 0) throw new Error("No invoices found in the document.");
 
     // ---------------------------------------------------------
-    // 2.5 🟢 NEW: CONSOLIDATE MULTI-PAGE INVOICES 
+    // 2.5 CONSOLIDATE MULTI-PAGE INVOICES 
     // ---------------------------------------------------------
     const consolidatedInvoices: Record<string, any> = {};
     let currentInvoiceId = "unknown_0";
@@ -148,7 +174,6 @@ export const handler: Handler<ExtractionPayload> = async (event) => {
         });
       });
 
-      // Grouping Logic: Track pages by Invoice Number or Sequential Flow
       if (pageInvoiceId) {
         currentInvoiceId = pageInvoiceId;
       } else if (index === 0) {
@@ -156,7 +181,6 @@ export const handler: Handler<ExtractionPayload> = async (event) => {
       }
 
       if (!consolidatedInvoices[currentInvoiceId]) {
-        // Create new consolidated invoice
         consolidatedInvoices[currentInvoiceId] = {
           vendorName: vendorName || "Unknown Vendor",
           total: total || 0,
@@ -168,7 +192,6 @@ export const handler: Handler<ExtractionPayload> = async (event) => {
           purchasedItems: [...purchasedItems]
         };
       } else {
-        // Merge subsequent pages into the existing invoice
         const inv = consolidatedInvoices[currentInvoiceId];
         if (vendorName && inv.vendorName === "Unknown Vendor") inv.vendorName = vendorName;
         if (date && !inv.date) inv.date = date;
@@ -219,34 +242,37 @@ export const handler: Handler<ExtractionPayload> = async (event) => {
         if (agentDecision.code && agentDecision.name) { finalCoaCode = agentDecision.code; finalCoaName = agentDecision.name; }
       } catch (e) {}
 
-      // --- APPSYNC MUTATIONS ---
+      // --- 🟢 APPSYNC SAFE UPSERT ---
       const appSyncPayload = {
-        userId, accountantId: userAccountantId, companyName: userCompanyName, companyTrn: userCompanyTrn,
-        extractedVendor: inv.vendorName, extractedTotal: inv.total, extractedTax: inv.tax, extractedDate: invoiceDate, vendorTRN: inv.trn,
-        isMathValid, aiConfidenceScore: inv.lowestConfidence, mappedAccountCode: finalCoaCode, mappedAccountName: finalCoaName,
-        s3FinalUri: `s3://${bucket}/${key}`, status: "PENDING_CUSTOMER"
+        userId, 
+        documentId: i === 0 ? documentId : `${documentId}-${i}`, // Attach ID safely
+        accountantId: userAccountantId, 
+        companyName: userCompanyName, 
+        companyTrn: userCompanyTrn,
+        extractedVendor: inv.vendorName, 
+        extractedTotal: inv.total, 
+        extractedTax: inv.tax, 
+        extractedDate: invoiceDate, 
+        vendorTRN: inv.trn,
+        isMathValid, 
+        aiConfidenceScore: inv.lowestConfidence, 
+        mappedAccountCode: finalCoaCode, 
+        mappedAccountName: finalCoaName,
+        s3FinalUri: `s3://${bucket}/${key}`, 
+        status: "PENDING_CUSTOMER"
       };
 
-      if (i === 0) {
-        // UPDATE the first placeholder row created by the frontend
-        await executeGraphQL(`
-          mutation UpdateDocumentRecord($input: UpdateDocumentRecordInput!) { updateDocumentRecord(input: $input) { documentId } }
-        `, { input: { documentId: documentId, ...appSyncPayload } });
-      } else {
-        // CREATE brand new rows for any additional consolidated invoices
-        await executeGraphQL(`
-          mutation CreateDocumentRecord($input: CreateDocumentRecordInput!) { createDocumentRecord(input: $input) { documentId } }
-        `, { input: { documentId: `${documentId}-${i}`, recordType: "DOCUMENT", ...appSyncPayload } });
-      }
+      // For invoice 0, attempt Update first. For 1+, attempt Create first.
+      await safeUpsertRecord(appSyncPayload, i > 0);
     }
     
     return { success: true, documentId, status: "PENDING_CUSTOMER" };
 
   } catch (error) {
     console.error("Extraction workflow failed:", error);
+    // Apply bulletproof upsert to the failure catch block too!
     try {
-      await executeGraphQL(`mutation UpdateDocumentRecord($input: UpdateDocumentRecordInput!) { updateDocumentRecord(input: $input) { documentId } }`, 
-      { input: { userId, documentId, status: "PROCESSING_FAILED" } });
+      await safeUpsertRecord({ userId, documentId, status: "PROCESSING_FAILED" }, false);
     } catch (e) {}
     throw error;
   }
