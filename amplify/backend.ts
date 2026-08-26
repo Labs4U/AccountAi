@@ -5,6 +5,7 @@ import { classifyDocument } from './functions/classifyDocument/resource';
 import { extractExpense } from './functions/extractExpense/resource';
 import { generateReports } from './functions/generateReports/resource';
 import { chatAgent } from './functions/chatAgent/resource';
+import { verifySesIdentity } from './functions/verifySesIdentity/resource';
 
 import * as sfn from 'aws-cdk-lib/aws-stepfunctions';
 import * as tasks from 'aws-cdk-lib/aws-stepfunctions-tasks';
@@ -26,6 +27,7 @@ const backend = defineBackend({
   extractExpense,
   generateReports,
   chatAgent,
+  verifySesIdentity,
 });
 
 const workflowStack = backend.createStack('DocumentProcessingWorkflow');
@@ -228,3 +230,15 @@ chatAgentLambda.addToRolePolicy(
 chatAgentLambda.addEnvironment(
   'AGENT_RUNTIME_ARN',
 'arn:aws:bedrock-agentcore:us-east-1:559846026818:runtime/AccountAgents_AccountAg-7qdHnrEe5C');
+
+// =======================================================================
+// 8. SES IDENTITY VERIFICATION — Post-Confirmation Trigger
+// =======================================================================
+// Grant the trigger Lambda permission to call SES VerifyEmailIdentity.
+// The trigger must never throw, but it needs this policy to succeed.
+backend.verifySesIdentity.resources.lambda.addToRolePolicy(
+  new iam.PolicyStatement({
+    actions: ['ses:VerifyEmailIdentity'],
+    resources: ['*'],
+  })
+);
