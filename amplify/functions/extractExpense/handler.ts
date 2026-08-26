@@ -208,6 +208,7 @@ export const handler: Handler<ExtractionPayload> = async (event) => {
     const finalInvoicesToProcess = Object.values(consolidatedInvoices);
     console.log(`Consolidated ${expenseDocs.length} raw pages into ${finalInvoicesToProcess.length} distinct invoice records.`);
 
+  
     // ---------------------------------------------------------
     // 3. PROCESS EACH CONSOLIDATED INVOICE SEPARATELY
     // ---------------------------------------------------------
@@ -230,17 +231,58 @@ export const handler: Handler<ExtractionPayload> = async (event) => {
         } catch (e) {}
       }
 
+      // 🟢 REPLACE EVERYTHING BELOW THIS LINE INSIDE THE LOOP 🟢
+
       // --- BEDROCK AGENT ---
-      let finalCoaCode = "6350"; let finalCoaName = "Miscellaneous Expenses";
+      let finalCoaCode = "6350"; 
+      let finalCoaName = "Miscellaneous Expenses";
+      let finalDocType = "INVOICE"; // Default fallback
+
+      const promptContext = `
+        You are an expert corporate accountant. 
+        Analyze this extracted document data:
+        - Vendor: ${inv.vendorName}
+        - Total Amount: ${inv.total}
+        - Purchased Items: ${purchasedItemsStr}
+        
+        Here is how this specific customer categorized past invoices from this vendor:
+        ${historicalContext}
+        
+        Here is the customer's STRICT Chart of Accounts (COA):
+        ${JSON.stringify(userCoaList, null, 2)}
+        
+        Tasks:
+        1. Select the single most appropriate COA category for this expense STRICTLY from the provided list. Do not invent categories.
+        2. Classify if the document is an "INVOICE" (a formal bill requesting payment) or a "RECEIPT" (a point-of-sale slip indicating payment was already made).
+        
+        Rules:
+        1. CRITICAL: If there is "past invoice" history provided above, you MUST map this expense to the exact same COA code and name used previously.
+        2. If there is no history, rely on the "Purchased Items" and the Vendor's primary industry. 
+        3. If completely unknown, default to "Miscellaneous Expenses".
+        
+        You MUST respond with a valid JSON object and NOTHING ELSE. 
+        Format: {"code": "SELECTED_CODE", "name": "SELECTED_NAME", "docType": "INVOICE" | "RECEIPT"}
+      `;
+
       try {
         const bedrockResponse = await bedrock.send(new ConverseCommand({
           modelId: 'us.amazon.nova-2-lite-v1:0',
-          messages: [{ role: 'user', content: [{ text: `Vendor: ${inv.vendorName}\nItems: ${purchasedItemsStr}\nHistory: ${historicalContext}\nCOA: ${JSON.stringify(userCoaList)}\nTask: Format: {"code": "SELECTED_CODE", "name": "SELECTED_NAME"}` }] }]
+          messages: [{ role: 'user', content: [{ text: promptContext }] }]
         }));
+        
         let resultText = bedrockResponse.output?.message?.content?.[0]?.text?.replace(/```json/gi, '').replace(/```/g, '').trim() || "{}";
         const agentDecision = JSON.parse(resultText);
-        if (agentDecision.code && agentDecision.name) { finalCoaCode = agentDecision.code; finalCoaName = agentDecision.name; }
-      } catch (e) {}
+        
+        if (agentDecision.code && agentDecision.name) { 
+          finalCoaCode = agentDecision.code; 
+          finalCoaName = agentDecision.name; 
+        }
+        if (agentDecision.docType) {
+          finalDocType = agentDecision.docType; // Capture the classification
+        }
+      } catch (e) {
+        console.warn("Bedrock AI failed to parse, using defaults.", e);
+      }
 
       // --- 🟢 APPSYNC SAFE UPSERT ---
       const appSyncPayload = {
@@ -258,6 +300,7 @@ export const handler: Handler<ExtractionPayload> = async (event) => {
         aiConfidenceScore: inv.lowestConfidence, 
         mappedAccountCode: finalCoaCode, 
         mappedAccountName: finalCoaName,
+        docType: finalDocType, // 🟢 Saves "INVOICE" or "RECEIPT"
         s3FinalUri: `s3://${bucket}/${key}`, 
         status: "PENDING_CUSTOMER"
       };
