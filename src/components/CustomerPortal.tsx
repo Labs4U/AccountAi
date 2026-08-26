@@ -137,8 +137,9 @@ export default function CustomerPortal() {
   }, []);
 
   // 3. 🟢 EVENT-DRIVEN STRATEGY: Initial Fetch + Pub/Sub Listeners
+  // 3. 🟢 REAL-TIME EVENT-DRIVEN STRATEGY: observeQuery
   useEffect(() => {
-    const subscriptions: any[] = [];
+    let subscription: any;
 
     const fetchSystemCOA = async () => {
       try {
@@ -162,78 +163,33 @@ export default function CustomerPortal() {
 
         if (isMounted.current) setUserSub(sub);
 
-        // 1. Initial Secure Fetch (Uses User ID Partition Key securely)
-        const { data, errors } = await client.models.DocumentRecord.list({
-          filter: { userId: { eq: sub } },
-          limit: 1000
+        // 🟢 NEW: Real-time sync replaces manual fetching and individual listeners
+        subscription = client.models.DocumentRecord.observeQuery({
+          filter: { userId: { eq: sub } }
+        }).subscribe({
+          next: ({ items }) => {
+            if (!isMounted.current) return;
+
+            // Separate the customer profile config from the actual invoices
+            const profile = items.find(d => d.documentId === "CUST");
+            const docs = items.filter(d => d.documentId !== "CUST");
+
+            // Automatically sort the live documents (newest first) and update UI
+            setDocuments([...docs].sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || "")));
+
+            // Update customer profile state if it exists
+            if (profile) {
+              setCustomerProfile(profile);
+              setCompanyName(profile.companyName || "");
+              setCompanyType(profile.companyType || "WLL");
+              setCompanyAddress(profile.companyAddress || "");
+              setCompanyTrn(profile.companyTrn || "");
+              setSelectedAccountantSub(profile.accountantId || "");
+              setCoaList(parseCOA(profile.chartOfAccounts));
+            }
+          },
+          error: (error) => console.warn("Real-time sync error:", error)
         });
-
-        if (errors) {
-          console.error("Initial fetch errors:", errors);
-          return;
-        }
-
-        const profile = data.find(d => d.documentId === "CUST");
-        const docs = data.filter(d => d.documentId !== "CUST");
-
-        if (isMounted.current) {
-          setDocuments([...docs].sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || "")));
-          if (profile) {
-            setCustomerProfile(profile);
-            setCompanyName(profile.companyName || "");
-            setCompanyType(profile.companyType || "WLL");
-            setCompanyAddress(profile.companyAddress || "");
-            setCompanyTrn(profile.companyTrn || "");
-            setSelectedAccountantSub(profile.accountantId || "");
-            setCoaList(parseCOA(profile.chartOfAccounts));
-          }
-        }
-
-        // 2. Client-Side Pub/Sub Handlers (Replaces observeQuery)
-        const handleNewItem = (item: any) => {
-          if (!isMounted.current || item.userId !== sub) return;
-          if (item.documentId === "CUST") {
-            setCustomerProfile(item);
-            setCompanyName(item.companyName || "");
-            setCompanyType(item.companyType || "WLL");
-            setCompanyAddress(item.companyAddress || "");
-            setCompanyTrn(item.companyTrn || "");
-            setSelectedAccountantSub(item.accountantId || "");
-            setCoaList(parseCOA(item.chartOfAccounts));
-          } else {
-            setDocuments(prev => {
-              if (prev.some(d => d.documentId === item.documentId)) return prev;
-              return [item, ...prev].sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
-            });
-          }
-        };
-
-        const handleUpdateItem = (item: any) => {
-          if (!isMounted.current || item.userId !== sub) return;
-          if (item.documentId === "CUST") {
-            setCustomerProfile(item);
-            setCompanyName(item.companyName || "");
-            setCompanyType(item.companyType || "WLL");
-            setCompanyAddress(item.companyAddress || "");
-            setCompanyTrn(item.companyTrn || "");
-            setSelectedAccountantSub(item.accountantId || "");
-            setCoaList(parseCOA(item.chartOfAccounts));
-          } else {
-            setDocuments(prev => prev.map(d => d.documentId === item.documentId ? item : d).sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || "")));
-          }
-        };
-
-        const handleDeleteItem = (item: any) => {
-          if (!isMounted.current || item.userId !== sub) return;
-          if (item.documentId !== "CUST") {
-            setDocuments(prev => prev.filter(d => d.documentId !== item.documentId));
-          }
-        };
-
-        // 3. Attach Live Subscriptions
-        subscriptions.push(client.models.DocumentRecord.onCreate().subscribe({ next: handleNewItem }));
-        subscriptions.push(client.models.DocumentRecord.onUpdate().subscribe({ next: handleUpdateItem }));
-        subscriptions.push(client.models.DocumentRecord.onDelete().subscribe({ next: handleDeleteItem }));
 
       } catch (err) {
         console.error("Failed to initialize customer portal:", err);
@@ -243,8 +199,9 @@ export default function CustomerPortal() {
     fetchSystemCOA();
     initializePortal();
 
+    // Clean up the websocket when the user navigates away
     return () => {
-      subscriptions.forEach(sub => sub.unsubscribe());
+      if (subscription) subscription.unsubscribe();
     };
   }, []);
 
@@ -866,27 +823,31 @@ export default function CustomerPortal() {
                 Cancel
               </button>
               <button
-                className="success-btn"
-                disabled={isDeleting}
-                style={{ flex: 1, backgroundColor: "#ef4444" }}
-                onClick={async () => {
-                  setIsDeleting(true);
-                  try {
-                    await client.models.DocumentRecord.delete({
-                      userId: docToDelete.userId,
-                      documentId: docToDelete.documentId
-                    });
-                    setDocToDelete(null);
-                  } catch (err) {
-                    alert("Failed to delete document.");
-                    console.error(err);
-                  } finally {
-                    setIsDeleting(false);
-                  }
-                }}
-              >
-                {isDeleting ? "Deleting..." : "Yes, Delete"}
-              </button>
+  className="success-btn"
+  disabled={isDeleting}
+  style={{ flex: 1, backgroundColor: "#ef4444" }}
+  onClick={async () => {
+    setIsDeleting(true);
+    
+    // 🟢 OPTIMISTIC UPDATE: Instantly remove the row from the UI before waiting for AWS
+    setDocuments(prev => prev.filter(d => d.documentId !== docToDelete.documentId));
+    
+    try {
+      await client.models.DocumentRecord.delete({
+        userId: docToDelete.userId,
+        documentId: docToDelete.documentId
+      });
+      setDocToDelete(null); // Close the validation modal
+    } catch (err) {
+      alert("Failed to delete document. Check your connection.");
+      console.error(err);
+    } finally {
+      setIsDeleting(false);
+    }
+  }}
+>
+  {isDeleting ? "Deleting..." : "Yes, Delete"}
+</button>
             </div>
           </div>
         </div>

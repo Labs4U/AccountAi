@@ -128,12 +128,15 @@ backend.classifyDocument.resources.lambda.addToRolePolicy(
 
 backend.extractExpense.resources.lambda.addToRolePolicy(
   new iam.PolicyStatement({
-    actions: ['textract:AnalyzeExpense',"textract:StartExpenseAnalysis", 
-  "textract:GetExpenseAnalysis",],
+    actions: [
+      'textract:AnalyzeExpense',
+      'textract:StartExpenseAnalysis', 
+      'textract:GetExpenseAnalysis',
+      'bedrock:InvokeModel' 
+    ],
     resources: ['*'], 
   })
 );
-
 // =======================================================================
 // 4. DYNAMODB INTEGRATION 
 // =======================================================================
