@@ -163,16 +163,19 @@ export default function CustomerPortal() {
 
         if (isMounted.current) setUserSub(sub);
 
-        // 🟢 NEW: Real-time sync replaces manual fetching and individual listeners
-        subscription = client.models.DocumentRecord.observeQuery({
-          filter: { userId: { eq: sub } }
-        }).subscribe({
+        // 🟢 Real-time sync: no server-side filter so ALL AppSync mutation events
+        //    (create, update, delete) are received by the WebSocket subscription.
+        //    Filtering by userId is done client-side to guarantee consistency.
+        subscription = client.models.DocumentRecord.observeQuery().subscribe({
           next: ({ items }) => {
             if (!isMounted.current) return;
 
+            // Client-side isolation: keep only records belonging to this user
+            const userItems = items.filter(d => d.userId === sub);
+
             // Separate the customer profile config from the actual invoices
-            const profile = items.find(d => d.documentId === "CUST");
-            const docs = items.filter(d => d.documentId !== "CUST");
+            const profile = userItems.find(d => d.documentId === "CUST");
+            const docs = userItems.filter(d => d.documentId !== "CUST");
 
             // Automatically sort the live documents (newest first) and update UI
             setDocuments([...docs].sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || "")));
@@ -394,14 +397,17 @@ export default function CustomerPortal() {
   };
 
   const handleViewDocument = async (doc: Schema["DocumentRecord"]["type"]) => {
+    // Prefer s3FinalUri (set by Lambda after extraction), fall back to s3RawUri.
+    // Both point to the actual S3 object key — no path rewriting needed.
     const uri = doc.s3FinalUri || doc.s3RawUri;
     if (!uri) return alert("Document URL not found.");
     try {
-      let path = uri.replace("s3://account-ai-bh/", "");
-      if (path.includes("/raw/") && doc.status !== "PROCESSING") path = path.replace("/raw/", "/invoice/");
+      // Strip the bucket prefix to get the bare storage path for Amplify getUrl
+      const path = uri.replace(/^s3:\/\/[^/]+\//, "");
       const linkToStorageFile = await getUrl({ path });
       window.open(linkToStorageFile.url.toString(), "_blank");
     } catch (err) {
+      console.error("handleViewDocument error:", err);
       alert("Failed to fetch document link.");
     }
   };
