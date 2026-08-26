@@ -41,7 +41,18 @@ const safeUpsertRecord = async (payload: any, attemptCreateFirst: boolean) => {
     mappedAccountCode
     mappedAccountName
     docType
+    companyName
+    companyTrn
+    accountantId
+    vendorTRN
+    isMathValid
+    aiConfidenceScore
+    s3RawUri
+    s3FinalUri
+    accountantNote
     createdAt
+    updatedAt
+    __typename
   `;
 
   const createQuery = `mutation CreateDocumentRecord($input: CreateDocumentRecordInput!) { createDocumentRecord(input: $input) { ${returnFields} } }`;
