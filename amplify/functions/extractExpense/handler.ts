@@ -26,9 +26,26 @@ const executeGraphQL = async (query: string, variables: any) => {
 
 // 🟢 NEW HELPER: BULLETPROOF UPSERT
 // Safely handles DynamoDB ConditionalCheckFailedExceptions due to race conditions or retries
+// 🟢 UPDATED HELPER: BULLETPROOF UPSERT WITH FULL RETURN FIELDS
+// Returns all fields so AppSync WebSockets can trigger the frontend observeQuery
 const safeUpsertRecord = async (payload: any, attemptCreateFirst: boolean) => {
-  const createQuery = `mutation CreateDocumentRecord($input: CreateDocumentRecordInput!) { createDocumentRecord(input: $input) { documentId } }`;
-  const updateQuery = `mutation UpdateDocumentRecord($input: UpdateDocumentRecordInput!) { updateDocumentRecord(input: $input) { documentId } }`;
+  const returnFields = `
+    documentId
+    userId
+    recordType
+    status
+    extractedVendor
+    extractedTotal
+    extractedTax
+    extractedDate
+    mappedAccountCode
+    mappedAccountName
+    docType
+    createdAt
+  `;
+
+  const createQuery = `mutation CreateDocumentRecord($input: CreateDocumentRecordInput!) { createDocumentRecord(input: $input) { ${returnFields} } }`;
+  const updateQuery = `mutation UpdateDocumentRecord($input: UpdateDocumentRecordInput!) { updateDocumentRecord(input: $input) { ${returnFields} } }`;
   
   try {
     if (attemptCreateFirst) {
