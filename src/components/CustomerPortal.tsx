@@ -369,38 +369,67 @@ export default function CustomerPortal() {
   const removeCoa = (index: number) => setCoaList(coaList.filter((_, i) => i !== index));
 
   const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (!file || !userSub) return;
-    setIsUploading(true); setUploadProgress(0); 
+    // 🟢 1. Convert the FileList into an Array to support multiple files
+    const files = Array.from(event.target.files || []);
+    if (files.length === 0 || !userSub) return;
+    
+    setIsUploading(true); 
+    setUploadProgress(0); 
+    
     try {
-      const documentId = `doc-${Date.now()}`;
-      const ext = (file.name.split(".").pop() || "jpg").toLowerCase();
-      const rawPath = `${userSub}/raw/${documentId}.${ext}`;
+      // Calculate total size for an accurate aggregate progress bar
+      const totalSize = files.reduce((acc, file) => acc + file.size, 0);
+      let uploadedSize = 0;
+      const newDocs: Array<Schema["DocumentRecord"]["type"]> = [];
 
-      await uploadData({ 
-        path: rawPath, data: file,
-        options: {
-          onProgress: ({ transferredBytes, totalBytes }) => {
-            if (totalBytes && isMounted.current) setUploadProgress(Math.round((transferredBytes / totalBytes) * 100));
+      // 🟢 2. Loop through and upload each file sequentially
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        // Append index to timestamp to guarantee unique IDs if processed in the same millisecond
+        const documentId = `doc-${Date.now()}-${i}`;
+        const ext = (file.name.split(".").pop() || "jpg").toLowerCase();
+        const rawPath = `${userSub}/raw/${documentId}.${ext}`;
+
+        await uploadData({ 
+          path: rawPath, 
+          data: file,
+          options: {
+            onProgress: ({ transferredBytes }) => {
+              if (isMounted.current) {
+                const overallTransferred = uploadedSize + transferredBytes;
+                setUploadProgress(Math.round((overallTransferred / totalSize) * 100));
+              }
+            }
           }
-        }
-      }).result;
+        }).result;
 
-      const newDocRecord = {
-        userId: userSub, 
-        documentId: documentId, 
-        recordType: "DOCUMENT",
-        status: "PROCESSING", 
-        s3RawUri: `s3://account-ai-bh/${rawPath}`,
-        accountantId: customerProfile?.accountantId || undefined,
-        companyName: companyName
-      } as Schema["DocumentRecord"]["type"];
+        // Add the current file's size to the running total after it finishes
+        uploadedSize += file.size;
 
-      if (isMounted.current) {
-        setDocuments(prev => [newDocRecord, ...prev]);
-        setIsUploading(false); setUploadProgress(0); setActiveTab("library"); 
+        const newDocRecord = {
+          userId: userSub, 
+          documentId: documentId, 
+          recordType: "DOCUMENT",
+          status: "PROCESSING", 
+          s3RawUri: `s3://account-ai-bh/${rawPath}`,
+          accountantId: customerProfile?.accountantId || undefined,
+          companyName: companyName
+        } as Schema["DocumentRecord"]["type"];
+
+        newDocs.push(newDocRecord);
+        await client.models.DocumentRecord.create(newDocRecord);
       }
-      await client.models.DocumentRecord.create(newDocRecord);
+
+      // 🟢 3. Update the UI state once all files are uploaded
+      if (isMounted.current) {
+        setDocuments(prev => [...newDocs, ...prev]);
+        setIsUploading(false); 
+        setUploadProgress(0); 
+        setActiveTab("library"); 
+        
+        // Reset the input so the user can select the same files again if needed
+        event.target.value = '';
+      }
     } catch (err) {
       console.error("Upload failed:", err);
       if (isMounted.current) setIsUploading(false);
@@ -611,7 +640,7 @@ export default function CustomerPortal() {
         <div className="upload-box" style={{ marginTop: "2rem", textAlign: "center", padding: "3rem", background: "white", borderRadius: "12px", boxShadow: "0 2px 4px rgba(0,0,0,0.05)" }}>
           <h2>Upload Financial Document</h2>
           <p style={{ color: "#64748b", marginBottom: "1.5rem" }}>Upload invoices or receipts for automated AI extraction.</p>
-          <input type="file" accept="application/pdf,image/*" onChange={handleFileUpload} disabled={isUploading} style={{ marginBottom: "1.5rem" }} />
+<input type="file" multiple accept="application/pdf,image/*" onChange={handleFileUpload} disabled={isUploading} style={{ marginBottom: "1.5rem" }} />
           {isUploading && (
             <div style={{ width: "100%", maxWidth: "400px", margin: "0 auto" }}>
               <p style={{ fontWeight: "bold", color: "#4f46e5", marginBottom: "0.5rem" }}>Uploading to S3... {uploadProgress}%</p>
