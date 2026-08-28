@@ -231,16 +231,23 @@ chatAgentLambda.addEnvironment(
 'arn:aws:bedrock-agentcore:us-east-1:559846026818:runtime/AccountAgents_AccountAg-7qdHnrEe5C');
 
 // =======================================================================
-// 8. SES IDENTITY VERIFICATION & DYNAMODB SYNC — Post-Confirmation Trigger
+// 8. POST-CONFIRMATION DYNAMODB SYNC & SES TRIGGER
 // =======================================================================
-
 const verifySesLambda = backend.verifySesIdentity.resources.lambda as lambda.Function;
 
-// B. Inject the DynamoDB table name into the Lambda's environment variables
-verifySesLambda.addEnvironment(
-  'DYNAMODB_TABLE_NAME', 
-  documentTable.tableName
+// Grant DynamoDB access using wildcard ARN to eliminate stack circular dependency
+verifySesLambda.addToRolePolicy(
+  new iam.PolicyStatement({
+    actions: [
+      'dynamodb:PutItem',
+      'dynamodb:UpdateItem',
+      'dynamodb:GetItem',
+      'dynamodb:Query',
+      'dynamodb:ListTables'
+    ],
+    resources: [
+      'arn:aws:dynamodb:*:*:table/DocumentRecord-*',
+      'arn:aws:dynamodb:*:*:table/DocumentRecord-*/index/*'
+    ]
+  })
 );
-
-// C. Grant the trigger Lambda permission to execute the UpdateCommand
-documentTable.grantReadWriteData(verifySesLambda);
