@@ -18,7 +18,6 @@ import * as lambda from 'aws-cdk-lib/aws-lambda';
 import { NodejsFunction } from 'aws-cdk-lib/aws-lambda-nodejs'; 
 import { DynamoEventSource } from 'aws-cdk-lib/aws-lambda-event-sources';
 import { Duration } from 'aws-cdk-lib';
-
 // 1. Remove 'storage' from the backend definition
 const backend = defineBackend({
   auth,
@@ -232,13 +231,24 @@ chatAgentLambda.addEnvironment(
 'arn:aws:bedrock-agentcore:us-east-1:559846026818:runtime/AccountAgents_AccountAg-7qdHnrEe5C');
 
 // =======================================================================
-// 8. SES IDENTITY VERIFICATION — Post-Confirmation Trigger
+// 8. SES IDENTITY VERIFICATION & DYNAMODB SYNC — Post-Confirmation Trigger
 // =======================================================================
-// Grant the trigger Lambda permission to call SES VerifyEmailIdentity.
-// The trigger must never throw, but it needs this policy to succeed.
-backend.verifySesIdentity.resources.lambda.addToRolePolicy(
+
+const verifySesLambda = backend.verifySesIdentity.resources.lambda as lambda.Function;
+
+// A. Grant the trigger Lambda permission to call SES VerifyEmailIdentity
+verifySesLambda.addToRolePolicy(
   new iam.PolicyStatement({
     actions: ['ses:VerifyEmailIdentity'],
     resources: ['*'],
   })
 );
+
+// B. Inject the DynamoDB table name into the Lambda's environment variables
+verifySesLambda.addEnvironment(
+  'DYNAMODB_TABLE_NAME', 
+  documentTable.tableName
+);
+
+// C. Grant the trigger Lambda permission to execute the UpdateCommand
+documentTable.grantReadWriteData(verifySesLambda);

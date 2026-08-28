@@ -57,20 +57,28 @@ const safeUpsertRecord = async (payload: any, attemptCreateFirst: boolean) => {
 
   const createQuery = `mutation CreateDocumentRecord($input: CreateDocumentRecordInput!) { createDocumentRecord(input: $input) { ${returnFields} } }`;
   const updateQuery = `mutation UpdateDocumentRecord($input: UpdateDocumentRecordInput!) { updateDocumentRecord(input: $input) { ${returnFields} } }`;
-  
+
+  // Strip null values before sending to AppSync.
+  // DynamoDB rejects explicit nulls on GSI sort-key fields (companyName, extractedVendor,
+  // vendorTRN) with: "Type mismatch for Index Key ... Expected: S Actual: NULL".
+  // Omitting the key entirely lets DynamoDB treat it as absent rather than typed-null.
+  const cleanPayload = Object.fromEntries(
+    Object.entries(payload).filter(([, v]) => v !== null)
+  );
+
   try {
     if (attemptCreateFirst) {
-      await executeGraphQL(createQuery, { input: { recordType: "DOCUMENT", ...payload } });
+      await executeGraphQL(createQuery, { input: { recordType: "DOCUMENT", ...cleanPayload } });
     } else {
-      await executeGraphQL(updateQuery, { input: payload });
+      await executeGraphQL(updateQuery, { input: cleanPayload });
     }
   } catch (error: any) {
     if (error.message && (error.message.includes("ConditionalCheckFailed") || error.message.includes("conditional request failed"))) {
-      console.log(`Swap fallback triggered for ${payload.documentId}.`);
+      console.log(`Swap fallback triggered for ${cleanPayload.documentId}.`);
       if (attemptCreateFirst) {
-        await executeGraphQL(updateQuery, { input: payload });
+        await executeGraphQL(updateQuery, { input: cleanPayload });
       } else {
-        await executeGraphQL(createQuery, { input: { recordType: "DOCUMENT", ...payload } });
+        await executeGraphQL(createQuery, { input: { recordType: "DOCUMENT", ...cleanPayload } });
       }
     } else {
       throw error;
