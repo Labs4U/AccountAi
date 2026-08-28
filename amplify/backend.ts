@@ -236,14 +236,6 @@ chatAgentLambda.addEnvironment(
 
 const verifySesLambda = backend.verifySesIdentity.resources.lambda as lambda.Function;
 
-// A. Grant the trigger Lambda permission to call SES VerifyEmailIdentity
-verifySesLambda.addToRolePolicy(
-  new iam.PolicyStatement({
-    actions: ['ses:VerifyEmailIdentity'],
-    resources: ['*'],
-  })
-);
-
 // B. Inject the DynamoDB table name into the Lambda's environment variables
 verifySesLambda.addEnvironment(
   'DYNAMODB_TABLE_NAME', 
